@@ -165,19 +165,34 @@ fn number_text(app: &SolveApp, x: f64) -> String {
     format!("{x:.*}", digits as usize)
 }
 
-/// The rows under Moment of inertia (#8095): label and cells, in g × the design's length unit
-/// squared. Products of inertia that are round-off against the largest entry read as zero.
+/// The tensor the window shows (#8095): in g × the design's length unit squared, with the
+/// products of inertia that are round-off against the largest entry as zero.
+fn shown_tensor(app: &SolveApp, total: &Value) -> Option<[[f64; 3]; 3]> {
+    let k = crate::prefs::unit_scale(&app.session.doc.units).0;
+    let i = tensor(&total["inertia_g_mm2"])?.map(|r| r.map(|x| x * k * k));
+    let largest = i.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+    Some(i.map(|r| r.map(|x| if x.abs() <= 1e-9 * largest { 0.0 } else { x })))
+}
+
+/// What Copy matrix puts on the clipboard: the shown tensor's rows at full precision, the values
+/// tab-separated, so it pastes as a 3 × 3 grid into a spreadsheet and splits easily in code.
+fn tensor_text(t: &[[f64; 3]; 3]) -> String {
+    t.iter().map(|r| r.map(|x| x.to_string()).join("\t")).collect::<Vec<_>>().join("\n")
+}
+
+/// The rows under Moment of inertia (#8095): label and cells, the tensor's three first.
 fn inertia_rows(app: &SolveApp, total: &Value) -> Vec<(String, Vec<String>)> {
     let k = crate::prefs::unit_scale(&app.session.doc.units).0;
-    let Some(i) = tensor(&total["inertia_g_mm2"]).map(|t| t.map(|r| r.map(|x| x * k * k))) else {
+    let Some(i) = shown_tensor(app, total) else {
         return Vec::new();
     };
-    let largest = i.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
-    let cell = |x: f64| number_text(app, if x.abs() <= 1e-9 * largest { 0.0 } else { x });
-    let mut rows: Vec<(String, Vec<String>)> =
-        ["x", "y", "z"].iter().zip(i).map(|(axis, r)| (app.tr(&format!("ui.properties.inertia_{axis}")).to_string(), r.map(cell).to_vec())).collect();
+    let mut rows: Vec<(String, Vec<String>)> = ["x", "y", "z"]
+        .iter()
+        .zip(i)
+        .map(|(axis, r)| (app.tr(&format!("ui.properties.inertia_{axis}")).to_string(), r.map(|x| number_text(app, x)).to_vec()))
+        .collect();
     if let Some(moments) = total["principal_moments_g_mm2"].as_array() {
-        let moments = moments.iter().map(|m| cell(m.as_f64().unwrap_or(f64::NAN) * k * k)).collect();
+        let moments = moments.iter().map(|m| number_text(app, m.as_f64().unwrap_or(f64::NAN) * k * k)).collect();
         rows.push((app.tr("ui.properties.principal_moments").to_string(), moments));
     }
     for (n, axis) in total["principal_axes"].as_array().into_iter().flatten().enumerate() {
@@ -186,6 +201,16 @@ fn inertia_rows(app: &SolveApp, total: &Value) -> Vec<(String, Vec<String>)> {
         rows.push((label, [e.x, e.y, e.z].map(|x| format!("{:.4}", if x.abs() < 5e-5 { 0.0 } else { x })).to_vec()));
     }
     rows
+}
+
+/// The window's title: just Properties for the whole design (its name would only be the
+/// file's), else with the name of the component, placement or bodies it measured.
+fn window_title(title: &str, v: &Value) -> String {
+    if v["component"].as_u64() == Some(0) {
+        crate::i18n::tr("ui.properties").to_string()
+    } else {
+        crate::i18n::format("properties.title", &[("name", title)])
+    }
 }
 
 /// The centre of mass the window shows, its principal axes when it has them, and how long to
@@ -272,7 +297,9 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
         app.tr("ui.properties.inertia").to_string(),
         app.tr("ui.properties.inertia_unavailable").to_string(),
     );
-    let heading = crate::i18n::format("properties.title", &[("name", &title)]);
+    let copy = shown_tensor(app, total).map(|t| tensor_text(&t));
+    let copy_label = app.tr("ui.properties.copy_matrix").to_string();
+    let heading = window_title(&title, &v);
     let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_props"), "settings", &heading).actions("", "Close", None).show(ctx, true, |ui| {
         for (label, value) in &rows {
             ui_kit::row(ui, crate::i18n::tr_label(label), |ui| ui_kit::text(ui, value, ui_kit::Text::Cell));
@@ -287,7 +314,7 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
                     return;
                 }
                 ui_kit::text(ui, &note, ui_kit::Text::Note("inertia_note"));
-                for (label, cells) in &inertia {
+                for (n, (label, cells)) in inertia.iter().enumerate() {
                     ui_kit::row(ui, label, |ui| {
                         ui.columns(cells.len(), |columns| {
                             for (column, cell) in columns.iter_mut().zip(cells) {
@@ -295,6 +322,18 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
                             }
                         })
                     });
+                    // Under the tensor's last row: copy it whole.
+                    if n == 2
+                        && let Some(text) = &copy
+                    {
+                        ui_kit::row(ui, "", |ui| {
+                            let button = ui_kit::button(ui, &copy_label, ui_kit::Button::Small);
+                            crate::scenario::publish_handle("properties:copy_inertia", button.rect.center());
+                            if button.clicked() {
+                                ui.ctx().copy_text(text.clone());
+                            }
+                        });
+                    }
                 }
             });
         }
@@ -421,6 +460,28 @@ mod tests {
         assert!((centre - Vec3::new(5.0, 10.0, 15.0)).len() < 1e-9, "{centre:?}");
         assert_eq!(axes, [Vec3::Z, Vec3::Y, Vec3::X * -1.0]);
         assert!((reach - 1400f64.sqrt() / 3.0).abs() < 1e-9, "{reach}");
+        assert_eq!(super::window_title("Untitled", &v), "Properties", "the whole design's card has no file name in its title");
+
+        // Copy matrix: the shown tensor, three tab-separated rows at full precision.
+        // The card settles its size over a few frames: click where the button ends up.
+        h.frames(3);
+        let [x, y] = h.widget("Copy matrix").expect("the Copy matrix button");
+        let (request, _reply) = crate::control::ControlRequest::new("ui.click", json!({"x": x, "y": y}));
+        crate::control::handle(&mut h.app, &h.ctx, &request);
+        let mut copied = Vec::new();
+        for _ in 0..4 {
+            h.frame();
+            copied.extend(h.output.commands.iter().filter_map(|c| match c {
+                egui::OutputCommand::CopyText(text) => Some(text.clone()),
+                _ => None,
+            }));
+        }
+        let text = copied.last().expect("Copy matrix puts the tensor on the clipboard");
+        let rows: Vec<Vec<f64>> = text.lines().map(|l| l.split('\t').map(|x| x.parse().unwrap()).collect()).collect();
+        let want = super::shown_tensor(&h.app, &v["total"]).unwrap();
+        assert_eq!(rows, want.map(|r| r.to_vec()).to_vec(), "{text}");
+        let m = v["total"]["mass_g"].as_f64().unwrap();
+        assert!((rows[0][0] - m * (400.0 + 900.0) / 12.0).abs() < 1e-6 * rows[0][0] && rows[0][1] == 0.0, "{text}");
         h.step(&json!({"widget": "Close"})).unwrap();
         assert!(h.app.menu.props.is_none());
 
@@ -432,6 +493,7 @@ mod tests {
         h.step(&json!({"start": "component.properties"})).unwrap();
         let (title, v) = h.app.menu.props.clone().expect("the window opens on the placement");
         assert_eq!((title.as_str(), v["occurrence"].as_u64()), ("Pin:1", Some(occurrence)), "{v}");
+        assert_eq!(super::window_title(&title, &v), "Properties: Pin:1", "a placement's card keeps its name");
         let (_, axes, _) = super::centre_and_axes(&v).unwrap();
         for (axis, want) in axes.iter().zip([Vec3::Z, Vec3::X, Vec3::Y]) {
             assert!((*axis - want).len() < 1e-9, "a round pin's axes are the world axes: {axes:?}");

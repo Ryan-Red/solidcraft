@@ -7,7 +7,10 @@ placement, or else for the active component. The window shows material-aware mas
 surface area, center of mass, first moments, the moment of inertia and the world bounding box.
 Pending occurrence moves are included without capturing them. While the window is open, the
 view marks the center of mass with its principal axes, numbered and colored as the window
-lists them.
+lists them. **Copy matrix**, under the tensor, puts it on the clipboard: three lines of
+tab-separated values at full precision, in the units shown, ready to paste into a spreadsheet
+or code. The window for the whole design is titled just **Properties**; one opened on a
+component, placement or bodies carries its name.
 
 The same measurements are available through commands:
 
