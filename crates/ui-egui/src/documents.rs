@@ -610,6 +610,26 @@ pub fn tabs_info(app: &SolveApp) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// A design open in another tab, as Insert Design offers it (#8570): its name, its file (`None`:
+/// not saved yet, so there is nothing to link) and whether it has unsaved changes.
+pub(crate) struct OpenDesign {
+    pub name: String,
+    pub path: Option<String>,
+    pub unsaved: bool,
+}
+
+/// The designs open in the other tabs, in tab order: none on the shown design's file, and no
+/// blank one (an empty new design has nothing to insert).
+pub(crate) fn other_designs(app: &SolveApp) -> Vec<OpenDesign> {
+    let shown = app.session.path.as_deref();
+    app.docs
+        .background()
+        .filter(|s| s.path.is_some() || !s.doc.features.is_empty())
+        .filter(|s| !s.path.as_deref().zip(shown).is_some_and(|(a, b)| same_path(a, b)))
+        .map(|s| OpenDesign { name: s.doc.name.clone(), path: s.path.clone(), unsaved: s.is_dirty() })
+        .collect()
+}
+
 /// Where each tab's design is saved, in `tabs_info`'s order (`None`: not saved yet).
 fn tab_paths(app: &SolveApp) -> Vec<Option<String>> {
     if app.docs.slots.is_empty() {
