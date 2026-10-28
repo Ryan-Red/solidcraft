@@ -4,14 +4,19 @@
 //! Cancel and the close button change nothing. File → Design Properties…, the Browser's
 //! Document Settings, the root component's menu and `ui.start` of `document.metadata` or
 //! `document.metadata.set` open it. [`show_object`] draws the Properties card (mass, volume, area,
-//! centre of mass, bounding box, counts) of the body or component a menu asked about; both are
-//! `ui_kit::Window` cards.
+//! centre of mass, bounding box, counts, and for a component its first moments and moment of
+//! inertia: #8095) of the body or component a menu or Inspect → Measure → Properties asked
+//! about; both are `ui_kit::Window` cards. While the card is open, [`overlay`] marks the centre
+//! of mass in the view with the principal axes standing out of it.
 
-use serde_json::{Map, Value};
+use egui::{Align2, FontId, Stroke};
+use serde_json::{Map, Value, json};
 use solidcraft_engine::doc::metadata::{DESCRIPTION, Owner, keys};
+use solidcraft_engine::geom::Vec3;
 
 use crate::SolveApp;
 use crate::ui_kit;
+use crate::viewport::Proj;
 
 /// Longest preview of another tool's value in the list.
 const PREVIEW_CHARS: usize = 80;
@@ -115,8 +120,105 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     app.design_properties = Some(d);
 }
 
+/// Open the Properties window on `command`'s reply (`component.properties`,
+/// `occurrence.properties` or `inspect.measure`), titled with the reply's name, else `fallback`.
+/// A refusal goes to the status line.
+pub fn open_object(app: &mut SolveApp, command: &str, params: &Value, fallback: String) {
+    match app.session.execute(command, params) {
+        Ok(v) => {
+            let title = v["name"].as_str().map(str::to_string).unwrap_or(fallback);
+            app.menu.props = Some((title, v));
+        }
+        Err(e) => app.set_status(e.to_string(), true),
+    }
+}
+
+/// Inspect → Measure → Properties (#8095): the window of the one selected placement, else of the
+/// active component (at the root, the whole design).
+pub fn open_selected(app: &mut SolveApp) {
+    let (command, params) = match app.session.selection.as_slice() {
+        [solidcraft_engine::Sel::Occurrence { path }] if !path.is_empty() => {
+            ("occurrence.properties", json!({"occurrence": path.last(), "path": path}))
+        }
+        _ => ("component.properties", json!({})),
+    };
+    open_object(app, command, &params, String::new());
+}
+
+/// A reply's 3 × 3 tensor, row by row.
+fn tensor(v: &Value) -> Option<[[f64; 3]; 3]> {
+    let row = |r: &Value| -> Option<[f64; 3]> { Some([r.get(0)?.as_f64()?, r.get(1)?.as_f64()?, r.get(2)?.as_f64()?]) };
+    Some([row(v.get(0)?)?, row(v.get(1)?)?, row(v.get(2)?)?])
+}
+
+fn point(v: &Value) -> Option<Vec3> {
+    Some(Vec3::new(v.get(0)?.as_f64()?, v.get(1)?.as_f64()?, v.get(2)?.as_f64()?))
+}
+
+/// `x` with the length decimals, or with more where those would leave fewer than three
+/// significant digits; never a signed zero.
+fn number_text(app: &SolveApp, x: f64) -> String {
+    let decimals = i32::from(app.preferences.length_decimals.min(8));
+    let lead = if x == 0.0 || !x.is_finite() { 0 } else { x.abs().log10().floor() as i32 };
+    let digits = decimals.max(2 - lead).clamp(0, 12);
+    let x = if x.abs() < 0.5 * 10f64.powi(-digits) { 0.0 } else { x };
+    format!("{x:.*}", digits as usize)
+}
+
+/// The rows under Moment of inertia (#8095): label and cells, in g × the design's length unit
+/// squared. Products of inertia that are round-off against the largest entry read as zero.
+fn inertia_rows(app: &SolveApp, total: &Value) -> Vec<(String, Vec<String>)> {
+    let k = crate::prefs::unit_scale(&app.session.doc.units).0;
+    let Some(i) = tensor(&total["inertia_g_mm2"]).map(|t| t.map(|r| r.map(|x| x * k * k))) else {
+        return Vec::new();
+    };
+    let largest = i.iter().flatten().fold(0.0f64, |m, x| m.max(x.abs()));
+    let cell = |x: f64| number_text(app, if x.abs() <= 1e-9 * largest { 0.0 } else { x });
+    let mut rows: Vec<(String, Vec<String>)> =
+        ["x", "y", "z"].iter().zip(i).map(|(axis, r)| (app.tr(&format!("ui.properties.inertia_{axis}")).to_string(), r.map(cell).to_vec())).collect();
+    if let Some(moments) = total["principal_moments_g_mm2"].as_array() {
+        let moments = moments.iter().map(|m| cell(m.as_f64().unwrap_or(f64::NAN) * k * k)).collect();
+        rows.push((app.tr("ui.properties.principal_moments").to_string(), moments));
+    }
+    for (n, axis) in total["principal_axes"].as_array().into_iter().flatten().enumerate() {
+        let Some(e) = point(axis) else { continue };
+        let label = crate::i18n::format("ui.properties.principal_axis", &[("number", &(n + 1).to_string())]);
+        rows.push((label, [e.x, e.y, e.z].map(|x| format!("{:.4}", if x.abs() < 5e-5 { 0.0 } else { x })).to_vec()));
+    }
+    rows
+}
+
+/// The centre of mass the window shows, its principal axes when it has them, and how long to
+/// draw them: a third of the bounding box's diagonal.
+fn centre_and_axes(v: &Value) -> Option<(Vec3, Vec<Vec3>, f64)> {
+    let total = &v["total"];
+    let bodies = v["bodies"].as_array();
+    let geometry = if total["center_of_mass"].is_array() { total } else { bodies.filter(|b| b.len() == 1)?.first()? };
+    let centre = point(&geometry["center_of_mass"])?;
+    let axes = total["principal_axes"].as_array().into_iter().flatten().filter_map(point).collect();
+    let reach = point(&geometry["bbox"]["max"]).zip(point(&geometry["bbox"]["min"])).map(|(a, b)| (a - b).len() / 3.0);
+    Some((centre, axes, reach.filter(|r| r.is_finite() && *r > 0.0).unwrap_or(10.0)))
+}
+
+/// While the Properties window is open: its centre of mass, with each principal axis standing
+/// out of it in the X, Y and Z colours in turn and numbered as the window lists them (#8095).
+pub fn overlay(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
+    let Some((centre, axes, reach)) = app.menu.props.as_ref().and_then(|(_, v)| centre_and_axes(v)) else { return };
+    let Some(at) = proj.to_screen(centre) else { return };
+    let tk = crate::theme::Tokens::view();
+    for (n, (axis, colour)) in axes.iter().zip(tk.axes()).enumerate() {
+        let Some(tip) = proj.to_screen(centre + *axis * reach) else { continue };
+        painter.line_segment([at, tip], Stroke::new(2.0, colour));
+        painter.text(tip, Align2::LEFT_BOTTOM, (n + 1).to_string(), FontId::proportional(tk.font_small), colour);
+    }
+    painter.circle(at, 6.0, tk.panel.gamma_multiply(0.8), Stroke::new(1.6, tk.accent));
+    painter.line_segment([at - egui::vec2(10.0, 0.0), at + egui::vec2(10.0, 0.0)], Stroke::new(1.2, tk.accent));
+    painter.line_segment([at - egui::vec2(0.0, 10.0), at + egui::vec2(0.0, 10.0)], Stroke::new(1.2, tk.accent));
+}
+
 /// Draw the Properties window of the body or component the menu asked about (mass, volume,
-/// area, centre of mass, bounding box and counts), when it is open. Close dismisses it.
+/// area, centre of mass, bounding box and counts; a component's first moments and moment of
+/// inertia), when it is open. Close dismisses it.
 pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
     let Some((title, v)) = app.menu.props.clone() else { return };
     let number = |x: &Value, k: &str| x.get(k).and_then(Value::as_f64).unwrap_or(f64::NAN);
@@ -155,10 +257,46 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
         }
     }
     rows.push(("Faces / edges / vertices", format!("{} / {} / {}", total["faces"], total["edges"], total["vertices"])));
+    let (k, unit) = crate::prefs::unit_scale(&app.session.doc.units);
+    let first = point(&total["first_moment_g_mm"]).filter(|_| number(total, "mass_g") > 0.0).map(|m| {
+        let m: Vec<String> = [m.x, m.y, m.z].iter().map(|x| number_text(app, x * k)).collect();
+        format!("({}) g·{unit}", m.join(", "))
+    });
+    let inertia = inertia_rows(app, total);
+    let note = crate::i18n::format("ui.properties.inertia_note", &[("unit", unit)]);
+    // A component's closed bodies have mass, but a mesh that would not close gave no tensor.
+    let unavailable =
+        inertia.is_empty() && total["inertia_g_mm2"].is_null() && number(total, "mass_g") > 0.0 && total.get("first_moment_g_mm").is_some();
+    let (first_label, section, unavailable_text) = (
+        app.tr("ui.properties.first_moments").to_string(),
+        app.tr("ui.properties.inertia").to_string(),
+        app.tr("ui.properties.inertia_unavailable").to_string(),
+    );
     let heading = crate::i18n::format("properties.title", &[("name", &title)]);
     let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_props"), "settings", &heading).actions("", "Close", None).show(ctx, true, |ui| {
         for (label, value) in &rows {
             ui_kit::row(ui, crate::i18n::tr_label(label), |ui| ui_kit::text(ui, value, ui_kit::Text::Cell));
+        }
+        if let Some(first) = &first {
+            ui_kit::row(ui, &first_label, |ui| ui_kit::text(ui, first, ui_kit::Text::Cell));
+        }
+        if !inertia.is_empty() || unavailable {
+            ui_kit::section(ui, "sc_props_inertia", &section, true, |ui| {
+                if unavailable {
+                    ui_kit::text(ui, &unavailable_text, ui_kit::Text::Note("inertia_unavailable"));
+                    return;
+                }
+                ui_kit::text(ui, &note, ui_kit::Text::Note("inertia_note"));
+                for (label, cells) in &inertia {
+                    ui_kit::row(ui, label, |ui| {
+                        ui.columns(cells.len(), |columns| {
+                            for (column, cell) in columns.iter_mut().zip(cells) {
+                                ui_kit::text(column, cell, ui_kit::Text::MonoCell);
+                            }
+                        })
+                    });
+                }
+            });
         }
     });
     if closed || action == ui_kit::Action::Cancel {
@@ -188,7 +326,7 @@ mod tests {
         h.frames(2);
         assert!(h.widget("Open surface — no volume").is_some());
         assert!(h.widget("Area").is_some());
-        for label in ["Volume", "Density", "Mass", "Center of mass"] {
+        for label in ["Volume", "Density", "Mass", "Center of mass", "First moments", "Moment of inertia"] {
             assert!(h.widget(label).is_none(), "{label} must not be shown for an open surface");
         }
         assert!(h.widget("Open bodies (no volume)").is_none());
@@ -262,6 +400,52 @@ mod tests {
         let d = h.app.design_properties.as_ref().unwrap();
         assert_eq!((d.opened.len(), d.fields.len()), (labels.len(), labels.len()), "a field for each key, none for others");
         assert!(h.widget("Other tools' data (1)").is_some(), "the unknown key is listed with other tools' data");
+    }
+
+    /// #8095: Inspect → Measure → Properties opens the window (it used to run the command and
+    /// show nothing), with a component's first moments and moment of inertia; the view marks
+    /// its centre of mass with three principal axes a third of the box's diagonal long.
+    #[test]
+    fn the_measure_panels_properties_button_opens_the_window_with_the_moment_of_inertia() {
+        use solidcraft_engine::geom::Vec3;
+        let mut h = Harness::new();
+        h.app.run("solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Block"})).unwrap();
+        h.step(&json!({"start": "component.properties"})).unwrap();
+        h.frames(2);
+        let (_, v) = h.app.menu.props.clone().expect("the button opens the window");
+        assert!(v["total"]["inertia_g_mm2"].is_array(), "{v}");
+        for label in ["First moments", "Moment of inertia", "Ixx, Ixy, Ixz", "Izx, Izy, Izz", "Principal moments", "Principal axis 3"] {
+            assert!(h.widget(label).is_some(), "{label}");
+        }
+        let (centre, axes, reach) = super::centre_and_axes(&v).unwrap();
+        assert!((centre - Vec3::new(5.0, 10.0, 15.0)).len() < 1e-9, "{centre:?}");
+        assert_eq!(axes, [Vec3::Z, Vec3::Y, Vec3::X * -1.0]);
+        assert!((reach - 1400f64.sqrt() / 3.0).abs() < 1e-9, "{reach}");
+        h.step(&json!({"widget": "Close"})).unwrap();
+        assert!(h.app.menu.props.is_none());
+
+        // One selected placement: its own properties, by its path.
+        let c = h.app.run("component.create", json!({"name": "Pin", "grounded": false})).unwrap();
+        h.app.run("solid.cylinder", json!({"radius": 4, "height": 10, "base": [50, 0, 0]})).unwrap();
+        let occurrence = c["occurrence"].as_u64().unwrap();
+        h.app.session.selection = vec![solidcraft_engine::Sel::Occurrence { path: vec![occurrence] }];
+        h.step(&json!({"start": "component.properties"})).unwrap();
+        let (title, v) = h.app.menu.props.clone().expect("the window opens on the placement");
+        assert_eq!((title.as_str(), v["occurrence"].as_u64()), ("Pin:1", Some(occurrence)), "{v}");
+        let (_, axes, _) = super::centre_and_axes(&v).unwrap();
+        for (axis, want) in axes.iter().zip([Vec3::Z, Vec3::X, Vec3::Y]) {
+            assert!((*axis - want).len() < 1e-9, "a round pin's axes are the world axes: {axes:?}");
+        }
+    }
+
+    #[test]
+    fn moments_keep_three_significant_digits_and_no_signed_zero() {
+        let h = Harness::new();
+        let decimals = usize::from(h.app.preferences.length_decimals);
+        assert_eq!(super::number_text(&h.app, 1234.5678), format!("{:.decimals$}", 1234.5678));
+        assert_eq!(super::number_text(&h.app, 0.000_012_34), "0.0000123");
+        assert!(!super::number_text(&h.app, -1e-30).starts_with('-'));
+        assert_eq!(super::number_text(&h.app, 0.0), format!("{:.decimals$}", 0.0));
     }
 
     #[test]

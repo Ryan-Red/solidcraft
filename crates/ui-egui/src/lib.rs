@@ -1528,6 +1528,11 @@ impl SolveApp {
             bom_panel::open(self);
             return;
         }
+        // Inspect → Measure → Properties: the window, not a reply nobody sees (#8095).
+        if matches!(id, "component.properties" | "occurrence.properties") {
+            design_properties::open_selected(self);
+            return;
+        }
         if id == "sketch.finish" {
             self.finish_sketch();
             return;
