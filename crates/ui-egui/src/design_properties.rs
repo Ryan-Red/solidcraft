@@ -124,12 +124,87 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
 /// `occurrence.properties` or `inspect.measure`), titled with the reply's name, else `fallback`.
 /// A refusal goes to the status line.
 pub fn open_object(app: &mut SolveApp, command: &str, params: &Value, fallback: String) {
-    match app.session.execute(command, params) {
+    close_object(app);
+    // A large assembly takes seconds to measure, which froze the window (#5203): measured on a
+    // copy beside it, the card shows when done. Headless and in tests (no wait set), here.
+    if let Some(wait) = app.apply_off_thread
+        && let Some(rx) = measure_beside(app.session.scratch(), command, params)
+    {
+        match rx.recv_timeout(wait) {
+            Ok(reply) => opened(app, reply, fallback),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => app.menu.props_measuring = Some(Measuring { fallback, rx }),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => app.set_status(app.tr("ui.properties.measuring_failed").to_string(), true),
+        }
+        return;
+    }
+    let reply = app.session.execute(command, params).map_err(|e| e.to_string());
+    opened(app, reply, fallback);
+}
+
+/// Close the Properties card, and drop a measurement still running for it.
+pub fn close_object(app: &mut SolveApp) {
+    app.menu.props = None;
+    app.menu.props_measuring = None;
+}
+
+/// A Properties measurement running beside the window (#5203): the card's title when the reply
+/// has no name, and the reply to come.
+pub struct Measuring {
+    fallback: String,
+    rx: std::sync::mpsc::Receiver<Result<Value, String>>,
+}
+
+/// Show `reply` in the card, titled with its name (else `fallback`); a refusal goes to the
+/// status line.
+fn opened(app: &mut SolveApp, reply: Result<Value, String>, fallback: String) {
+    match reply {
         Ok(v) => {
             let title = v["name"].as_str().map(str::to_string).unwrap_or(fallback);
             app.menu.props = Some((title, v));
         }
-        Err(e) => app.set_status(e.to_string(), true),
+        Err(e) => app.set_status(e, true),
+    }
+}
+
+/// Run `command` on `copy` on a worker; the reply comes on the returned channel.
+#[cfg(not(target_arch = "wasm32"))]
+fn measure_beside(mut copy: solidcraft_engine::Session, command: &str, params: &Value) -> Option<std::sync::mpsc::Receiver<Result<Value, String>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (command, params) = (command.to_string(), params.clone());
+    std::thread::Builder::new()
+        .name("properties".into())
+        .spawn(move || {
+            let _ = tx.send(copy.execute(&command, &params).map_err(|e| e.to_string()));
+        })
+        .ok()?;
+    Some(rx)
+}
+
+/// No threads on the web: measured here.
+#[cfg(target_arch = "wasm32")]
+fn measure_beside(_copy: solidcraft_engine::Session, _command: &str, _params: &Value) -> Option<std::sync::mpsc::Receiver<Result<Value, String>>> {
+    None
+}
+
+/// While a measurement runs beside the window: a card saying so (Close drops it), and the
+/// Properties card in its place once the reply is in.
+fn show_measuring(app: &mut SolveApp, ctx: &egui::Context) {
+    let Some(m) = app.menu.props_measuring.take() else { return };
+    match m.rx.try_recv() {
+        Ok(reply) => return opened(app, reply, m.fallback),
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => return app.set_status(app.tr("ui.properties.measuring_failed").to_string(), true),
+        Err(std::sync::mpsc::TryRecvError::Empty) => {}
+    }
+    ctx.request_repaint_after(std::time::Duration::from_millis(100));
+    let (heading, text) = (app.tr("ui.properties").to_string(), app.tr("ui.properties.measuring").to_string());
+    let (closed, action) = ui_kit::Window::new(egui::Id::new("sc_props"), "settings", &heading).actions("", "Close", None).show(ctx, true, |ui| {
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui_kit::text(ui, &text, ui_kit::Text::Note("measuring"));
+        });
+    });
+    if !(closed || action == ui_kit::Action::Cancel) {
+        app.menu.props_measuring = Some(m);
     }
 }
 
@@ -245,6 +320,7 @@ pub fn overlay(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
 /// area, centre of mass, bounding box and counts; a component's first moments and moment of
 /// inertia), when it is open. Close dismisses it.
 pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
+    show_measuring(app, ctx);
     let Some((title, v)) = app.menu.props.clone() else { return };
     let number = |x: &Value, k: &str| x.get(k).and_then(Value::as_f64).unwrap_or(f64::NAN);
     let mut rows: Vec<(&str, String)> = Vec::new();
@@ -339,7 +415,7 @@ pub fn show_object(app: &mut SolveApp, ctx: &egui::Context) {
         }
     });
     if closed || action == ui_kit::Action::Cancel {
-        app.menu.props = None;
+        close_object(app);
     }
 }
 
@@ -498,6 +574,37 @@ mod tests {
         for (axis, want) in axes.iter().zip([Vec3::Z, Vec3::X, Vec3::Y]) {
             assert!((*axis - want).len() < 1e-9, "a round pin's axes are the world axes: {axes:?}");
         }
+    }
+
+    /// #5203: Properties on a large assembly took seconds on the window thread, which froze it.
+    /// Measured on a copy beside the window (here never waited for), the card says it is
+    /// measuring and shows the reply once it is in; Close drops a measurement still running.
+    #[test]
+    fn properties_measure_beside_the_window_and_show_when_done() {
+        let mut h = Harness::new();
+        h.app.run("solid.box", json!({"length": 10, "width": 20, "height": 30, "body_name": "Block"})).unwrap();
+        let here = h.app.session.execute("component.properties", &json!({})).unwrap();
+        h.app.apply_off_thread = Some(std::time::Duration::ZERO);
+        super::open_object(&mut h.app, "component.properties", &json!({}), String::new());
+        assert!(h.app.menu.props.is_none(), "nothing is waited for on the window thread");
+        let m = h.app.menu.props_measuring.take().expect("measuring beside the window");
+        assert_eq!(m.rx.recv().unwrap().unwrap(), here, "the copy measures what the design here does");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        h.app.menu.props_measuring = Some(super::Measuring { fallback: String::new(), rx });
+        h.frames(2);
+        assert!(h.widget("Measuring…").is_some() && h.app.menu.props.is_none());
+        tx.send(Ok(here.clone())).unwrap();
+        h.frames(2);
+        assert_eq!(h.app.menu.props.as_ref().map(|(_, v)| v), Some(&here));
+        assert!(h.widget("Moment of inertia").is_some());
+
+        let (_tx, rx) = std::sync::mpsc::channel::<Result<serde_json::Value, String>>();
+        super::close_object(&mut h.app);
+        h.app.menu.props_measuring = Some(super::Measuring { fallback: String::new(), rx });
+        h.frames(2);
+        h.step(&json!({"widget": "Close"})).unwrap();
+        assert!(h.app.menu.props_measuring.is_none() && h.app.menu.props.is_none(), "Close drops the measurement");
     }
 
     #[test]

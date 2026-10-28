@@ -221,6 +221,8 @@ pub struct MenuState {
     pub link_copies: Option<crate::linked_source::Copies>,
     /// The Properties window: title and measurements.
     pub props: Option<(String, Value)>,
+    /// Its measurement while it runs beside the window (#5203).
+    pub props_measuring: Option<crate::design_properties::Measuring>,
     /// The viewport menu opened over something: it offers Select Other.
     pub over_geometry: bool,
     /// The plane under the cursor when the viewport menu opened: it offers a sketch on it.

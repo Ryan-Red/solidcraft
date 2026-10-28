@@ -8,6 +8,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "Measuring…",
+    "ui.properties.measuring_failed": "Measuring stopped before it finished.",
     "ui.properties.principal_axis": "Principal axis {number}",
     "ui.properties.principal_moments": "Principal moments"
   },
@@ -23,6 +25,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "جارٍ القياس…",
+    "ui.properties.measuring_failed": "توقف القياس قبل أن يكتمل.",
     "ui.properties.principal_axis": "المحور الرئيسي {number}",
     "ui.properties.principal_moments": "العزوم الرئيسية"
   },
@@ -35,6 +39,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "Wird gemessen…",
+    "ui.properties.measuring_failed": "Die Messung wurde vor dem Ende abgebrochen.",
     "ui.properties.principal_axis": "Hauptachse {number}",
     "ui.properties.principal_moments": "Hauptträgheitsmomente"
   },
@@ -47,6 +53,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "מודד…",
+    "ui.properties.measuring_failed": "המדידה נעצרה לפני שהסתיימה.",
     "ui.properties.principal_axis": "ציר ראשי {number}",
     "ui.properties.principal_moments": "מומנטים ראשיים"
   },
@@ -59,6 +67,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "測定中…",
+    "ui.properties.measuring_failed": "測定が完了する前に停止しました。",
     "ui.properties.principal_axis": "主軸 {number}",
     "ui.properties.principal_moments": "主慣性モーメント"
   },
@@ -71,6 +81,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "측정 중…",
+    "ui.properties.measuring_failed": "측정이 끝나기 전에 중단되었습니다.",
     "ui.properties.principal_axis": "주축 {number}",
     "ui.properties.principal_moments": "주관성 모멘트"
   },
@@ -83,6 +95,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "Đang đo…",
+    "ui.properties.measuring_failed": "Phép đo đã dừng trước khi hoàn tất.",
     "ui.properties.principal_axis": "Trục chính {number}",
     "ui.properties.principal_moments": "Mômen quán tính chính"
   },
@@ -95,6 +109,8 @@
     "ui.properties.inertia_x": "Ixx, Ixy, Ixz",
     "ui.properties.inertia_y": "Iyx, Iyy, Iyz",
     "ui.properties.inertia_z": "Izx, Izy, Izz",
+    "ui.properties.measuring": "正在测量…",
+    "ui.properties.measuring_failed": "测量在完成前已停止。",
     "ui.properties.principal_axis": "主轴 {number}",
     "ui.properties.principal_moments": "主惯性矩"
   }

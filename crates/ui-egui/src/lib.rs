@@ -1230,7 +1230,7 @@ impl SolveApp {
                     self.edit_in_place.active = None;
                     render_workspace::reset_document(self);
                     dim_view::cancel();
-                    self.menu.props = None;
+                    design_properties::close_object(self);
                     sketch_attachment_ui::clear(self);
                     // The old document is already replaced: discard its editor without
                     // applying cancellation hooks (such as restoring its timeline marker).
