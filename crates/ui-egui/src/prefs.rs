@@ -241,7 +241,7 @@ impl NavPreset {
         }
     }
 
-    fn translated_label(&self) -> &str {
+    pub(crate) fn translated_label(&self) -> &str {
         if self.id == TOUCHPAD_NAV { crate::i18n::tr("nav.touchpad.label") } else { crate::i18n::tr_label(self.label) }
     }
 }
@@ -551,6 +551,40 @@ pub enum OrbitAround {
     ViewCentre,
     /// The model point under the cursor when the drag began.
     Cursor,
+}
+
+/// The sole modifier that turns vertical scroll into wheel-style zoom.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrackpadZoomModifier {
+    Cmd,
+    Alt,
+    Ctrl,
+    /// The default: scroll keeps its usual meaning until a key is chosen.
+    #[default]
+    Off,
+}
+
+impl TrackpadZoomModifier {
+    pub const ALL: [Self; 4] = [Self::Cmd, Self::Alt, Self::Ctrl, Self::Off];
+
+    pub fn modifiers(self) -> Option<egui::Modifiers> {
+        match self {
+            Self::Cmd => Some(egui::Modifiers::COMMAND),
+            Self::Alt => Some(egui::Modifiers::ALT),
+            Self::Ctrl => Some(egui::Modifiers::CTRL),
+            Self::Off => None,
+        }
+    }
+
+    pub fn label_id(self, platform: crate::tool_modifiers::Platform) -> &'static str {
+        match self {
+            Self::Cmd if platform == crate::tool_modifiers::Platform::Mac => "prefs.trackpad_zoom_modifier.cmd",
+            Self::Alt => "prefs.trackpad_zoom_modifier.alt",
+            Self::Cmd | Self::Ctrl => "prefs.trackpad_zoom_modifier.ctrl",
+            Self::Off => "prefs.trackpad_zoom_modifier.off",
+        }
+    }
 }
 
 /// Where the view goes when a sketch ends (Preferences: "When a sketch ends", #7038).
@@ -1039,6 +1073,12 @@ preference_settings! {
     /// Draw the parts browser on a translucent card over the 3D view instead of a column of its
     /// own, so the workspace keeps the whole window width.
     browser_float: bool = false, PAGE_INTERFACE;
+    /// The browser card folded to its header with the chevron in that header, kept from one run
+    /// to the next like the toolbar's pins (#8692).
+    browser_collapsed: bool = false, PAGE_INTERFACE;
+    /// Whether the browser card is always shown or kept out of sight until the pointer comes to
+    /// it, as the navigation bar's "Hide until hovered" does (#8692).
+    browser_show: crate::browser::BrowserShow = Default::default(), PAGE_INTERFACE;
     /// Where command dialogs open: at the view's edge, or in the left column in place of the
     /// browser and the History there (#6707).
     dialog_place: crate::dialog_column::DialogPlace = Default::default(), PAGE_INTERFACE;
@@ -1048,10 +1088,14 @@ preference_settings! {
     browser_bodies_folders: BodiesFolders = BodiesFolders::Several, PAGE_INTERFACE;
     /// The wheel zooms toward the point under the cursor (else toward the view's centre).
     zoom_to_cursor: bool = true, PAGE_NAVIGATION => check("Zoom to the cursor", "The wheel zooms toward the point under the cursor (off: toward the view's centre)");
+    /// Speed multiplier for wheel zoom, independent of the 3D mouse.
+    wheel_zoom_speed: f32 = 1.0, PAGE_NAVIGATION, accept(0.25..=4.0) => slider("ui.wheel_zoom_speed", 0.25..=4.0, 0.05, |v| format!("{v:.2}×"), "prefs:wheel_zoom_speed");
     /// Spread discrete wheel input across frames (off: apply each event immediately).
     smooth_wheel_zoom: bool = true, PAGE_NAVIGATION => check("Smooth wheel zoom", "Turn off to apply each wheel event immediately, without a smoothing tail");
     /// Two-finger trackpad scroll pans (off: it zooms like the wheel); pinch always zooms.
     trackpad_pan: bool = true, PAGE_NAVIGATION;
+    /// Hold this modifier alone to zoom with vertical wheel or two-finger scroll.
+    trackpad_zoom_modifier: TrackpadZoomModifier = TrackpadZoomModifier::default(), PAGE_NAVIGATION;
     /// Horizontal trackpad and thumb-wheel scrolling pans the view the other way (#2007).
     pan_reverse_x: bool = false, PAGE_NAVIGATION => check("Reverse horizontal pan direction", "Horizontal two-finger scrolling and the thumb wheel pan the other way");
     /// Vertical trackpad scrolling pans the view the other way (#5240).
@@ -1184,6 +1228,8 @@ preference_settings! {
     /// horizontal or vertical snap to the previous point, and the click adds the alignments
     /// (#7828). Off by default: only with the previous point, one axis at a time, as before.
     sketch_align_points: bool = false, PAGE_SKETCH;
+    /// Open Project's options before picking; off restores its previous direct-pick workflow.
+    project_options_dialog: bool = true, PAGE_SKETCH;
     /// Whether Alt/Option also frees gizmo / canvas manipulator arrows (Primary always does).
     manipulator_free_alt: bool = true, PAGE_SKETCH;
     /// A sketch's icon in History and the browser takes the colour of its solve state, and its
@@ -3049,6 +3095,9 @@ pub fn migrate(mut p: Prefs) -> Prefs {
     if !p.joint_rotation_fine.is_finite() || !(0.001..=180.0).contains(&p.joint_rotation_fine) {
         p.joint_rotation_fine = 0.1;
     }
+    if !accepted::wheel_zoom_speed(&p) {
+        p.wheel_zoom_speed = Prefs::default().wheel_zoom_speed;
+    }
     if p.orbit_cursor {
         p.orbit_around = OrbitAround::Cursor;
         p.orbit_cursor = false;
@@ -3159,7 +3208,11 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     {
         return Err("`stand_up_unknown` must be ask, note or off".into());
     }
-    let new: Prefs = migrate(serde_json::from_value(cur).map_err(|e| e.to_string())?);
+    let new: Prefs = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+    if !accepted::wheel_zoom_speed(&new) {
+        return Err("`wheel_zoom_speed` must be 0.25…4".into());
+    }
+    let new = migrate(new);
     if !UNITS.contains(&new.default_units.as_str()) {
         return Err(format!("units must be one of {}", UNITS.join(", ")));
     }
@@ -3282,6 +3335,37 @@ pub(crate) fn reveal_preference(h: &mut crate::scenario::Harness, handle: &str) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn trackpad_zoom_modifier_roundtrips_and_validates_control_values() {
+        assert_eq!(Prefs::default().trackpad_zoom_modifier, TrackpadZoomModifier::Off);
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        for (id, value) in [
+            ("cmd", TrackpadZoomModifier::Cmd),
+            ("alt", TrackpadZoomModifier::Alt),
+            ("ctrl", TrackpadZoomModifier::Ctrl),
+            ("off", TrackpadZoomModifier::Off),
+        ] {
+            set(&mut app, &json!({"trackpad_zoom_modifier": id})).unwrap();
+            assert_eq!(app.preferences.trackpad_zoom_modifier, value);
+            let saved = serde_json::to_value(&app.preferences).unwrap();
+            assert_eq!(saved["trackpad_zoom_modifier"], id);
+            assert_eq!(lenient(&saved).trackpad_zoom_modifier, value);
+            let mut restored = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            restored.load_prefs(&app.prefs());
+            assert_eq!(restored.preferences.trackpad_zoom_modifier, value);
+        }
+        for invalid in [json!("super"), json!(""), json!(42), json!(null)] {
+            assert!(set(&mut app, &json!({"trackpad_zoom_modifier": invalid})).is_err());
+            assert_eq!(app.preferences.trackpad_zoom_modifier, TrackpadZoomModifier::Off);
+            assert_eq!(lenient(&json!({"trackpad_zoom_modifier": invalid})).trackpad_zoom_modifier, TrackpadZoomModifier::Off);
+        }
+        app.load_prefs(&json!({"preferences": {"trackpad_zoom_modifier": "future"}}).to_string());
+        assert_eq!(app.preferences.trackpad_zoom_modifier, TrackpadZoomModifier::Off);
+        app.preferences.trackpad_zoom_modifier = TrackpadZoomModifier::Cmd;
+        reset_preferences(&mut app.preferences, PAGE_NAVIGATION);
+        assert_eq!(app.preferences.trackpad_zoom_modifier, TrackpadZoomModifier::Off);
+    }
+
     #[test]
     fn navigation_bar_preferences_round_trip_and_recover_hostile_fields() {
         use crate::navigation_bar::{Edge, Idle, Labels, NavigationBar, Position, Size};
@@ -4689,6 +4773,8 @@ mod tests {
             ("history_sketches", json!("under_feature"), PAGE_INTERFACE),
             ("history_play_button", json!(false), PAGE_INTERFACE),
             ("browser_float", json!(true), PAGE_INTERFACE),
+            ("browser_collapsed", json!(true), PAGE_INTERFACE),
+            ("browser_show", json!("hover"), PAGE_INTERFACE),
             ("dialog_place", json!("left_column"), PAGE_INTERFACE),
             ("color_vision", json!("protan"), PAGE_INTERFACE),
             ("viewport_theme", json!("light"), PAGE_INTERFACE),

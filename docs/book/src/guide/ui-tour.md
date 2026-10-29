@@ -44,6 +44,7 @@
   off: scroll zooms like the wheel); mouse wheels zoom and the thumb wheel pans sideways.
   On Linux, pinch needs the native Wayland window system
   (see [Troubleshooting](troubleshooting.md)).
+  To zoom with vertical two-finger scroll while holding a key, choose the key in Navigation › Zoom with two-finger scroll while holding (Cmd on macOS or Ctrl on Windows/Linux, Alt, or Control). It is off until you choose one.
   With the **Fusion** preset and two-finger pan enabled, hold **Shift** while scrolling with
   two fingers to orbit freely instead of panning. No click is needed. Releasing Shift returns
   to panning, even during the same gesture. Shift does not snap this gesture to standard views;
@@ -138,6 +139,7 @@
   selects it, and while the marker sits between a sketch and its feature, or the two are in
   different folders, the sketch keeps a row of its own. The timeline along the bottom always lists
   features in creation order.
+  Feature Folders can contain joints as well as features; closing a folder hides both behind one tile.
 - **Status bar** (off by default: Preferences › Interface › **Status bar**). A thin bar along
   the window's bottom edge, below the timeline. From the right: the design's units (click them
   to change the design's units, one undo step), the open sketch's state in its colour (under
