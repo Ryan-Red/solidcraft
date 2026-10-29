@@ -356,12 +356,15 @@ fn tracking_does_not_leak_outside_the_viewport_or_into_another_sketch() {
     assert!(h.app.viewport.tracking.guide.is_none());
 }
 
-/// Lining up while drawing (#7828): a fixture whose points sit off the grid, so that only lining
-/// up can place a point exactly on them, seen from the top at about 1 mm of snap tolerance.
+/// Lining up while drawing (#7828), turned on (it is off by default): a fixture whose points sit
+/// off the grid, so that only lining up can place a point exactly on them, seen from the top at
+/// about 1 mm of snap tolerance.
 fn lining_up_fixture(points: &[(&str, Value)]) -> Harness {
     let mut h = Harness::new();
     h.app.home.open = false;
     h.app.preferences.look_at_anim = false;
+    assert!(!h.app.preferences.sketch_align_points, "off unless turned on");
+    h.app.preferences.sketch_align_points = true;
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     for (command, params) in points {
         h.app.run(command, params.clone()).unwrap();

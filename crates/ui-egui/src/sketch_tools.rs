@@ -512,6 +512,8 @@ pub fn refine_snap(
         }
         None => TOOL.with(|c| c.borrow().clone()),
     };
+    // With `sketch_align_points` off, a click takes the Line tool's inferences, as before.
+    let line_tool = if app.preferences.sketch_align_points { line_tool } else { app.tool.as_ref().is_none_or(|t| t.cmd == "sketch.line") };
     let prev = own.last().copied();
     // Line tool: the tangent point of a circle or arc, then a line through its centre
     // (before plain "on the curve", which would leave a chord free to miss the centre).
