@@ -10,7 +10,7 @@ fn fixture() -> Harness {
     h
 }
 #[test]
-fn native_inspector_defaults_to_output_and_keeps_job_actions_on_screen_in_both_shells() {
+fn native_inspector_keeps_stage_actions_on_screen_and_output_has_no_pinned_footer() {
     for dark in [false, true] {
         for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
             let mut h = fixture();
@@ -25,7 +25,22 @@ fn native_inspector_defaults_to_output_and_keeps_job_actions_on_screen_in_both_s
                 h.app.render_workspace.view.inspector.page = page;
                 h.frames(3);
                 let inspector = crate::scenario::rect_of("render:inspector").unwrap();
+                assert_eq!(h.app.session.doc.to_json(), before);
+                assert_eq!(h.app.session.revision, revision);
+                assert_eq!((h.app.session.undo.len(), h.app.session.redo.len()), history);
+                assert!(h.app.render_workspace.view.job.is_none());
+                assert!(h.app.render_workspace.view.completed.is_none());
                 if page == Page::Appearance {
+                    assert!(crate::scenario::rect_of("render:job-footer").is_none());
+                    continue;
+                }
+                if page == Page::Output {
+                    assert!(crate::scenario::rect_of("render:job-footer").is_none());
+                    let bar = crate::scenario::rect_of("render:stage_bar").unwrap();
+                    for name in ["render:stage:render.start", "render:stage:render.cancel"] {
+                        let action = crate::scenario::rect_of(name).unwrap();
+                        assert!(bar.contains_rect(action), "{name} outside stage bar");
+                    }
                     continue;
                 }
                 let footer = crate::scenario::rect_of("render:job-footer").unwrap();
@@ -34,11 +49,6 @@ fn native_inspector_defaults_to_output_and_keeps_job_actions_on_screen_in_both_s
                     let target = crate::scenario::rect_of(name).unwrap();
                     assert!(footer.contains_rect(target), "{name} clipped at {page:?}");
                 }
-                assert_eq!(h.app.session.doc.to_json(), before);
-                assert_eq!(h.app.session.revision, revision);
-                assert_eq!((h.app.session.undo.len(), h.app.session.redo.len()), history);
-                assert!(h.app.render_workspace.view.job.is_none());
-                assert!(h.app.render_workspace.view.completed.is_none());
             }
         }
     }
@@ -126,16 +136,327 @@ fn complete_native_studio_can_be_reviewed_and_applied_from_real_ui_controls() {
     setups::save(&mut h.app).unwrap();
     library::open_category(&mut h.app, "native_scenes");
     h.frames(4);
-    h.step(&json!({"click":{"handle":"render:library:NATIVE-STUDIO-002"}})).unwrap();
+    h.step(&json!({"click":{"handle":"render:light:NATIVE-STUDIO-002"}})).unwrap();
     let before = h.app.session.doc.to_json();
-    h.step(&json!({"widget":h.app.tr("render.scene_review")})).unwrap();
+    h.step(&json!({"click":{"handle":"render:light:review"}})).unwrap();
     assert_eq!(h.app.session.doc.to_json(), before);
-    assert!(h.app.render_workspace.view.inspector.scene_review.is_some());
-    h.step(&json!({"widget":h.app.tr("render.scene_consent")})).unwrap();
-    h.step(&json!({"widget":h.app.tr("render.scene_apply")})).unwrap();
+    assert!(h.app.render_workspace.view.library.review.is_some());
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
     assert!(!h.app.render_workspace.view.draft.stage.is_empty());
-    assert!(h.app.render_workspace.view.inspector.scene_review.is_none());
+    assert!(h.app.render_workspace.view.library.review.is_none());
     assert!(!h.app.render_workspace.view.dirty);
+}
+
+#[test]
+fn surface_stage_contains_preview_target_plane_repeat_and_method_reason_in_order() {
+    let mut h = fixture();
+    h.call("ui.resize", json!({"width":1600,"height":1800}));
+    h.app.run("select.set", json!({"items":[solidcraft_engine::Sel::Body { name:"Subject".into() }]})).unwrap();
+    library::open_category(&mut h.app, "surfaces");
+    h.frames(3);
+    let before = h.app.session.doc.to_json();
+    h.step(&json!({"click":{"handle":"render:library:SURF-001"}})).unwrap();
+    h.frames(3);
+    let note = crate::scenario::rect_of("dialog:note:surface:note").unwrap();
+    let target = crate::scenario::rect_of("render:surface:target").unwrap();
+    let plane = crate::scenario::rect_of("render:surface:xy").unwrap();
+    let repeat = crate::scenario::rect_of("render:surface:repeat").unwrap();
+    let reason = crate::scenario::rect_of("dialog:note:surface:gpu:reason").unwrap();
+    assert!(note.bottom() < target.top());
+    assert!(target.bottom() <= plane.top());
+    assert!(plane.bottom() <= repeat.top());
+    assert!(repeat.bottom() < reason.top());
+    assert_eq!(h.app.render_workspace.view.method, ImageMethod::Raster);
+    assert_eq!(h.app.session.doc.to_json(), before);
+}
+
+#[test]
+fn stage_catalogs_fill_a_290_by_530_panel_and_keep_two_line_labels_inside_tiles() {
+    use crate::{scenario, ui_kit};
+    use egui::{Pos2, RawInput, Rect, vec2};
+    let previous_theme = crate::theme::is_dark();
+    for dark in [false, true] {
+        for (kind, selected, method, key) in [
+            ("appearances", None, ImageMethod::Raster, "render:library:catalog"),
+            ("surfaces", None, ImageMethod::Raster, "render:surface:catalog"),
+            ("surfaces", Some("SURF-001"), ImageMethod::Raster, "render:surface:catalog"),
+            ("physical_profiles", Some("steel-304-plate"), ImageMethod::Raster, "render:surface:catalog"),
+            ("native_scenes", None, ImageMethod::Raster, "render:light:catalog"),
+            ("native_scenes", Some("NATIVE-STUDIO-002"), ImageMethod::GpuRaytrace, "render:light:catalog"),
+        ] {
+            let mut h = fixture();
+            // Capture the font atlas from its first upload along with panel textures.
+            h.ctx = crate::fonts::test_context();
+            crate::theme::set_dark(dark);
+            h.ctx.set_visuals(if dark { egui::Visuals::dark() } else { egui::Visuals::light() });
+            // A resizable 290 pt card needs the floating, wide-screen policy.
+            h.app.ui.layout = crate::shell::LayoutMode::Floating;
+            h.app.preferences.render_browser_width = 290.0;
+            h.app.preferences.render_browser_side = "left".into();
+            super::super::select_image_method(&mut h.app, method);
+            library::open_category(&mut h.app, kind);
+            crate::theme::TabAccent::publish(&h.app, &h.ctx);
+            let document = h.app.session.doc.to_json();
+            let history = (h.app.session.undo.len(), h.app.session.redo.len());
+            // Panel::workspace reserves an 8 pt bottom gap in these bounds.
+            let bounds = Rect::from_min_size(Pos2::ZERO, vec2(1200.0, 538.0));
+            let mut textures = std::collections::HashMap::new();
+            let mut output = None;
+            let mut unselected_height = 0.0;
+            for pass in 0..8 {
+                if pass == 4 {
+                    unselected_height = scenario::rect_of(&format!("{key}:body")).unwrap().height();
+                    if let Some(id) = selected {
+                        let mut view = std::mem::take(&mut h.app.render_workspace.view.library);
+                        library::choose(&mut h.app, &mut view, kind, id).unwrap();
+                        h.app.render_workspace.view.library = view;
+                    }
+                }
+                let mut frame = h.ctx.run_ui(RawInput { screen_rect: Some(bounds), ..Default::default() }, |ui| {
+                    scenario::clear_handles();
+                    library::card(&mut h.app, ui, bounds);
+                });
+                ui_kit::test_textures_update(&mut textures, &frame.textures_delta);
+                frame.textures_delta.clear();
+                output = Some(frame);
+            }
+            let panel = h.app.shell.workspace_panels.get("render:appearances").unwrap().0;
+            assert!((panel.width() - 290.0).abs() < 2.0 && (panel.height() - 530.0).abs() < 2.0, "{panel:?}");
+            let content = scenario::rect_of(&format!("{key}:content")).unwrap();
+            let body = scenario::rect_of(&format!("{key}:body")).unwrap();
+            let footer = scenario::rect_of(&format!("{key}:footer")).unwrap();
+            assert!(body.height() >= 0.7 * (content.height() - footer.height()), "{kind} {selected:?}: {content:?} {body:?} {footer:?}");
+            assert!(panel.contains_rect(body) && panel.contains_rect(footer), "{kind}: {panel:?} {body:?} {footer:?}");
+            assert!(body.bottom() <= footer.top() + 0.1, "{kind}: overlapping body and footer");
+            assert!((content.bottom() - footer.bottom()).abs() <= 1.0, "{kind}: footer is not at the bottom");
+            if key == "render:surface:catalog" {
+                let row = scenario::rect_of("render:library:SURF-001").or_else(|| scenario::rect_of("render:library:steel-304-plate")).unwrap();
+                assert!(body.height() >= row.height() * 3.0, "three complete list rows must remain visible");
+                if selected.is_some() {
+                    assert!(body.height() < unselected_height, "selecting a resource must make room for its detail card");
+                }
+            } else {
+                let labels: Vec<_> = scenario::rects("render:").into_iter().filter(|(name, _)| name.ends_with(":galley")).collect();
+                assert!(labels.len() >= 3, "{kind}: missing tile captions");
+                for (name, galley) in labels {
+                    let id = name.strip_suffix(":galley").unwrap();
+                    let tile = scenario::rect_of(id).unwrap();
+                    let label = scenario::rect_of(&format!("{id}:label")).unwrap();
+                    assert!(tile.contains_rect(label) && label.expand(0.1).contains_rect(galley), "{name}: {tile:?} {label:?} {galley:?}");
+                }
+                let frame = output.as_ref().unwrap();
+                let captions: Vec<_> = crate::test_support::text_shapes(frame).filter(|text| text.galley.job.wrap.max_rows == 2).collect();
+                assert!(captions.iter().any(|text| text.galley.rows.len() == 2), "{kind}: exercise a two-line caption");
+                assert!(captions.iter().all(|text| text.galley.rows.len() <= 2 && !text.galley.job.wrap.break_anywhere));
+                let note = h.app.tr(if kind == "appearances" { "render.stage_layout.appearance_note" } else { "render.stage_layout.studio_note" });
+                let note = crate::test_support::text_shapes(frame).find(|text| text.galley.job.text == note).unwrap();
+                assert_eq!(note.galley.rows.len(), 1, "catalog notes must stay on one line");
+            }
+            assert_eq!(h.app.session.doc.to_json(), document);
+            assert_eq!((h.app.session.undo.len(), h.app.session.redo.len()), history);
+            if let Some(dir) = std::env::var_os("SOLIDCRAFT_STAGE_LAYOUT_EVIDENCE") {
+                std::fs::create_dir_all(&dir).unwrap();
+                let frame = output.unwrap();
+                let image = ui_kit::test_raster(&h.ctx, frame.shapes, frame.pixels_per_point, panel, &textures);
+                image
+                    .save(std::path::Path::new(&dir).join(format!(
+                        "{kind}-{}-{}-{}.png",
+                        selected.unwrap_or("none"),
+                        method.label(),
+                        if dark { "dark" } else { "light" }
+                    )))
+                    .unwrap();
+            }
+        }
+    }
+    crate::theme::set_dark(previous_theme);
+}
+
+#[test]
+fn review_expires_when_the_reviewed_settings_or_document_change() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    library::review::quality(&mut h.app, "Q-002").unwrap();
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.app.render_workspace.view.draft.width = 333;
+    h.frames(3);
+    assert!(crate::scenario::rect_of("dialog:report:review:stale").is_some());
+    let before = h.app.session.doc.to_json();
+    let ok = crate::scenario::rect_of("dialog:ok").unwrap().center();
+    h.step(&json!({"click":[ok.x,ok.y]})).unwrap();
+    assert_eq!(h.app.session.doc.to_json(), before);
+    assert_eq!(h.app.render_workspace.view.draft.width, 333);
+    assert!(h.app.render_workspace.view.library.review.is_some());
+}
+
+#[test]
+fn quality_review_is_callable_by_command_and_saves_only_after_acknowledgement() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let mut view = library::View::default();
+    library::choose(&mut h.app, &mut view, "quality", "Q-002").unwrap();
+    h.app.render_workspace.view.library = view;
+    let before = h.app.session.doc.to_json();
+    h.app.start("render.quality.prepare");
+    h.frames(3);
+    assert!(h.app.render_workspace.view.library.review.is_some());
+    assert_eq!(h.app.session.doc.to_json(), before);
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+    let saved = &h.app.session.doc.render.setups[&h.app.render_workspace.view.name];
+    assert_eq!((saved.width, saved.height), (1600, 900));
+    assert_eq!(h.app.render_workspace.view.samples, 512);
+    assert!(h.app.render_workspace.view.library.review.is_none());
+}
+
+#[test]
+fn physical_review_is_read_only_and_can_be_closed_after_acknowledgement() {
+    let mut h = fixture();
+    let before = h.app.session.doc.to_json();
+    let plan = h.app.run("render.library.physical.prepare", json!({"id":"steel-304-plate","name":"Reference","acknowledge_reference":true})).unwrap();
+    library::review::open(&mut h.app, "physical", "304 steel".into(), plan.clone(), library::review::Apply::Physical(plan)).unwrap();
+    h.frames(3);
+    assert!(crate::scenario::rect_of("dialog:note:review:physical").is_some());
+    assert!(crate::scenario::rect_of("dialog:apply").is_some());
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+    assert_eq!(h.app.session.doc.to_json(), before);
+    assert!(h.app.session.doc.user_materials.is_empty());
+}
+
+#[test]
+fn quality_review_rejects_hostile_ids_and_preserves_the_design() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let before = h.app.session.doc.to_json();
+    for id in ["", "../Q-002", "\0", "Q-999999999999999999999999999"] {
+        assert!(library::review::quality(&mut h.app, id).is_err());
+    }
+    assert_eq!(h.app.session.doc.to_json(), before);
+    assert!(h.app.render_workspace.view.library.review.is_none());
+}
+
+#[test]
+fn saved_optics_removal_requires_confirmation_and_keeps_geometry() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    setups::save(&mut h.app).unwrap();
+    let name = h.app.render_workspace.view.name.clone();
+    h.app
+        .run(
+            "render.optics.bind",
+            json!({"name":name,"body_index":0,"body_name":"Subject", "expected_revision":h.app.session.revision,"optics":{"ior":1.4}}),
+        )
+        .unwrap();
+    setups::load(&mut h.app);
+    let target = h.app.render_workspace.view.draft.optics.iter().next().unwrap().target.clone();
+    let before = h.app.session.doc.to_json();
+    let geometry = h.app.session.doc.features.clone();
+    let revision = h.app.session.revision;
+    library::review::remove(&mut h.app, "render.optics.unbind", json!({"name":name,"target":target,"expected_revision":revision}));
+    h.frames(3);
+    assert_eq!(h.app.session.doc.to_json(), before);
+    h.step(&json!({"click":{"handle":"dialog:cancel"}})).unwrap();
+    assert_eq!(h.app.session.doc.to_json(), before);
+    library::review::remove(&mut h.app, "render.optics.unbind", json!({"name":name,"target":target,"expected_revision":revision}));
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+    assert!(h.app.session.doc.render.setups[&name].optics.is_empty());
+    assert_eq!(h.app.session.doc.features, geometry);
+}
+
+#[test]
+fn temporary_maps_review_keeps_plane_scale_and_requires_acknowledgement() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let target: materials::Target = serde_json::from_value(h.app.run("render.scene", json!({})).unwrap()["bodies"][0].clone()).unwrap();
+    let plan = h
+        .app
+        .run("render.library.surface.prepare", json!({"id":"SURF-001","body_index":target.ordinal,"body_name":target.name,"plane":"yz","scale":2.5}))
+        .unwrap();
+    let before = h.app.session.doc.to_json();
+    library::review::open(
+        &mut h.app,
+        "maps",
+        "Brushed stainless".into(),
+        plan,
+        library::review::Apply::Maps { id: "SURF-001".into(), target, plane: "yz".into(), scale: 2.5 },
+    )
+    .unwrap();
+    h.frames(3);
+    assert!(h.app.render_workspace.view.materials.bindings.is_empty());
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+    let binding = &h.app.render_workspace.view.materials.bindings[0];
+    assert_eq!(binding.maps.frame.u, [0.0, 250.0, 0.0]);
+    assert_eq!(binding.maps.frame.v, [0.0, 0.0, 250.0]);
+    assert_eq!(h.app.session.doc.to_json(), before);
+}
+
+#[test]
+fn rig_review_contains_fit_and_consent_controls_in_design_order_without_applying() {
+    let mut h = fixture();
+    super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
+    let mut view = library::View::default();
+    library::choose(&mut h.app, &mut view, "rigs", "RIG-002").unwrap();
+    let before = h.app.session.doc.to_json();
+    library::review::light(&mut h.app, &view, "RIG-002").unwrap();
+    h.frames(3);
+    let mut previous = crate::scenario::rect_of("review:sphere").unwrap().bottom();
+    for key in ["render:review:center:0", "render:review:extent", "render:review:bounds", "render:review:emitters-only", "render:review:acknowledge"]
+    {
+        let rect = crate::scenario::rect_of(key).unwrap();
+        assert!(rect.top() >= previous, "{key} is out of design order");
+        previous = rect.bottom();
+    }
+    assert_eq!(h.app.session.doc.to_json(), before);
+    assert!(!h.app.render_workspace.view.library.review.as_ref().unwrap().acknowledged);
+}
+
+#[test]
+fn returning_between_look_and_light_restores_catalogs_for_the_selected_scope() {
+    let mut h = fixture();
+    let catalog = h.app.run("appearance.library", json!({})).unwrap();
+    let id = catalog["appearances"].as_array().unwrap().iter().find_map(|entry| entry["id"].as_str()).unwrap().to_string();
+    let before = h.app.session.doc.to_json();
+    library::open_category(&mut h.app, "native_scenes");
+    h.frames(3);
+    assert!(crate::scenario::rect_of("render:light:NATIVE-STUDIO-001").is_some());
+    h.app.run("view.render_stage", json!({"stage":"look"})).unwrap();
+    h.frames(3);
+    assert!(crate::scenario::rect_of(&format!("render:library:{id}")).is_some());
+    library::open_category(&mut h.app, "scenes");
+    h.frames(3);
+    assert!(crate::scenario::rect_of("render:light:SCENE-001").is_some());
+    h.app.run("view.render_stage", json!({"stage":"look"})).unwrap();
+    h.frames(3);
+    h.app.run("view.render_stage", json!({"stage":"light"})).unwrap();
+    h.frames(3);
+    assert!(crate::scenario::rect_of("render:light:SCENE-001").is_some());
+    assert!(crate::scenario::rect_of("dialog:note:render:light:reason").is_some());
+    assert_eq!(h.app.session.doc.to_json(), before);
+}
+
+#[test]
+fn surface_target_dropdown_keeps_the_chosen_body_through_review() {
+    let mut h = fixture();
+    h.call("ui.resize", json!({"width":1600,"height":1800}));
+    h.app.run("solid.box", json!({"length":5,"width":5,"height":5,"body_name":"Other"})).unwrap();
+    h.app.run("select.set", json!({"items":[solidcraft_engine::Sel::Body { name:"Subject".into() }]})).unwrap();
+    library::open_category(&mut h.app, "surfaces");
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:library:SURF-001"}})).unwrap();
+    h.frames(3);
+    h.step(&json!({"click":{"handle":"render:surface:target"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:list:Other"}})).unwrap();
+    h.frames(3);
+    h.step(&json!({"widget":h.app.tr("render.stage_panels.use_uniform")})).unwrap();
+    h.step(&json!({"click":{"handle":"render:review:acknowledge"}})).unwrap();
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
+    assert!(h.app.session.doc.appearances.bodies.contains_key("Other"));
+    assert!(!h.app.session.doc.appearances.bodies.contains_key("Subject"));
 }
 #[test]
 fn unsupported_output_is_visible_and_never_fakes_export_or_clamps_intent() {
@@ -204,7 +525,8 @@ fn actual_output_ratio_and_orientation_controls_are_local_and_preserve_saved_cap
     setups::save(&mut h.app).unwrap();
     let saved = h.app.session.doc.to_json();
     let camera = h.app.cam;
-    h.frames(3);
+    reveal(&mut h.app, "render_output_advanced");
+    h.frames(24);
     h.step(&json!({"click":{"handle":"render:aspect-lock"}})).unwrap();
     assert!(h.app.render_workspace.view.inspector.resolution.locked);
     assert!(!h.app.render_workspace.view.dirty, "coupling editor coordinates is not a saved numerical edit");
@@ -247,6 +569,10 @@ fn temporary_library_maps_preserve_the_reviewed_plane_scale_and_optical_exclusiv
     let original = binding.maps.frame;
     assert!(materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "unknown", 1.0).is_err());
     assert!(materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "xy", 0.0).is_err());
+    for scale in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0, f64::MAX] {
+        assert!(materials::install_library_surface(&mut h.app, "SURF-001", target.clone(), "xy", scale).is_err());
+        assert_eq!(h.app.render_workspace.view.materials.bindings[0].maps.frame, original);
+    }
     assert_eq!(h.app.render_workspace.view.materials.bindings[0].maps.frame, original);
     h.app.render_workspace.view.materials.bindings[0].glass_enabled = true;
     assert!(materials::install_library_surface(&mut h.app, "SURF-001", target, "xy", 1.0).is_err());
@@ -255,7 +581,7 @@ fn temporary_library_maps_preserve_the_reviewed_plane_scale_and_optical_exclusiv
 }
 
 #[test]
-fn native_composition_review_actions_are_visible_before_auxiliary_resource_details() {
+fn native_composition_review_actions_are_visible_in_shared_dialog() {
     for dark in [false, true] {
         let mut h = fixture();
         h.call("ui.set", json!({"dark":dark}));
@@ -263,16 +589,18 @@ fn native_composition_review_actions_are_visible_before_auxiliary_resource_detai
         setups::save(&mut h.app).unwrap();
         library::open_category(&mut h.app, "native_scenes");
         h.frames(3);
-        h.step(&json!({"click":{"handle":"render:library:NATIVE-STUDIO-002"}})).unwrap();
-        let footer = crate::scenario::rect_of("render:job-footer").unwrap();
-        let resolve = crate::scenario::rect_of("render:scene-resolve").unwrap();
-        assert!(resolve.bottom() < footer.top(), "the review action must precede supplementary prose");
-        h.step(&json!({"click":{"handle":"render:scene-resolve"}})).unwrap();
+        h.step(&json!({"click":{"handle":"render:light:NATIVE-STUDIO-002"}})).unwrap();
+        h.step(&json!({"click":{"handle":"render:light:review"}})).unwrap();
         h.frames(3);
-        for name in ["render:scene-consent", "render:scene-apply"] {
-            let rect = crate::scenario::rect_of(name).unwrap();
-            assert!(rect.bottom() < footer.top(), "{name} must remain above the pinned job actions: rect={rect:?}, footer={footer:?}, dark={dark}");
-        }
+        let card = crate::scenario::rect_of("review:sphere").unwrap();
+        let replaces = crate::scenario::rect_of("dialog:note:review:replaces").unwrap();
+        let kept = crate::scenario::rect_of("dialog:note:review:kept").unwrap();
+        let ack = crate::scenario::rect_of("render:review:acknowledge").unwrap();
+        assert!(card.bottom() <= replaces.top());
+        assert!(replaces.bottom() <= kept.top());
+        assert!(kept.bottom() <= ack.top());
+        assert!(crate::scenario::rect_of("dialog:ok").is_some());
+        assert!(!h.app.render_workspace.view.library.review.as_ref().unwrap().acknowledged);
     }
 }
 
@@ -293,7 +621,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         ("render.library.environment.apply", Page::Environment),
         ("render.stage.backdrop", Page::Background),
         ("render.quality.prepare", Page::Output),
-        ("render.status", Page::Diagnostics),
+        ("render.status", Page::Output),
         ("render.camera.get", Page::Camera),
         ("render.camera.set", Page::Camera),
         ("render.preset.apply", Page::Scene),
@@ -308,10 +636,11 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         ("render.stage.ground", Page::Background),
         ("render.stage.clear", Page::Background),
         ("render.hdr.inspect", Page::Environment),
+        ("render.environment.set", Page::Environment),
         ("render.settings.capture_hdr", Page::Environment),
         ("render.aging.describe", Page::Appearance),
-        ("render.effects.describe", Page::Effects),
-        ("render.backends", Page::Diagnostics),
+        ("render.effects.describe", Page::Output),
+        ("render.backends", Page::Output),
     ] {
         h.app.start(id);
         h.frames(3);
@@ -557,14 +886,184 @@ fn aging_tab_adds_reorders_disables_and_persists_layers_without_engineering_edit
 }
 
 #[test]
-fn effects_tab_retains_ordered_looks_and_photographic_intent_across_save_and_reload() {
+fn wear_selection_precedes_output_page_and_appearance_selection_chrome() {
+    fn assert_header(h: &Harness, title: &str) {
+        let inspector = crate::scenario::rect_of("render:inspector").unwrap();
+        let header = crate::scenario::rect_of("render:inspector:header").unwrap();
+        assert!(inspector.contains_rect(header));
+        let tree = h.output.accesskit_update.as_ref().unwrap();
+        let context = format!(
+            "layout={:?}, page={:?}, title={title:?}, header={header:?}, pixels_per_point={}",
+            h.app.ui.layout,
+            h.app.render_workspace.view.inspector.page,
+            h.ctx.pixels_per_point(),
+        );
+        // egui stores Role::Label text in value(), not label(). Each pass supplies the
+        // title node; its bounds are UI points (the root carries the pixel-scale transform).
+        let titles: Vec<_> =
+            tree.nodes.iter().filter(|(_, node)| node.role() == egui::accesskit::Role::Label && node.value() == Some(title)).collect();
+        assert!(!titles.is_empty(), "missing inspector title: {context}");
+        let bounds: Vec<_> = titles.iter().map(|(id, node)| (id, node.bounds())).collect();
+        eprintln!(
+            "header diagnostic: {context}, bounds={bounds:?}, label_matches={}",
+            tree.nodes.iter().filter(|(_, node)| node.label() == Some(title)).count()
+        );
+        assert!(
+            titles.iter().any(|(_, node)| {
+                node.bounds().is_some_and(|bounds| {
+                    bounds.x1 > bounds.x0
+                        && bounds.y1 > bounds.y0
+                        && header.contains_rect(egui::Rect::from_min_max(
+                            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        ))
+                })
+            }),
+            "inspector title has missing, empty or out-of-header bounds: {context}, bounds={bounds:?}"
+        );
+    }
+    for layout in [crate::shell::LayoutMode::Docked, crate::shell::LayoutMode::Floating] {
+        let mut h = fixture();
+        h.app.ui.layout = layout;
+        h.app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Subject".into() }];
+        let before = h.app.session.doc.to_json();
+        let history = (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len());
+        h.app.run("view.render_select", json!({"kind":"wear"})).unwrap();
+        assert!(h.app.session.selection.is_empty(), "Render focus clears object picks");
+        let wear_history = (history.0 + 1, history.1, history.2);
+        assert_eq!((h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len()), wear_history);
+        // Exercise stale object picks alongside Wear; normal focus commands clear them.
+        h.app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Subject".into() }];
+        for page in [Page::Output, Page::Appearance] {
+            h.app.render_workspace.view.inspector.page = page;
+            h.frames(3);
+            assert_header(&h, h.app.tr("render.wear_title"));
+            assert!(crate::scenario::rect_of("render:wear:controls").is_some());
+            assert!(crate::scenario::rect_of("render:appearance:close").is_none());
+            assert!(crate::scenario::rect_of("dialog:editor_footer").is_none());
+            assert!(crate::scenario::rect_of("render:page:aging").is_none());
+            let inspector = crate::scenario::rect_of("render:inspector").unwrap();
+            let footer = crate::scenario::rect_of("render:job-footer").unwrap();
+            assert!(inspector.contains_rect(footer));
+            for name in ["render:check", "render:start", "render:cancel", "render:export"] {
+                assert!(footer.contains_rect(crate::scenario::rect_of(name).unwrap()), "{name} outside Wear footer");
+            }
+            assert_eq!(h.app.session.doc.to_json(), before);
+            assert_eq!((h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len()), wear_history);
+        }
+        h.app.run("view.render_select", json!({"kind":"output"})).unwrap();
+        assert!(h.app.session.selection.is_empty());
+        let output_history = (history.0 + 2, history.1, history.2);
+        assert_eq!((h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len()), output_history);
+        h.app.render_workspace.view.inspector.page = Page::Appearance;
+        h.frames(3);
+        assert_header(&h, h.app.tr("render.page_output"));
+        assert!(crate::scenario::rect_of("render:wear:controls").is_none());
+        assert!(crate::scenario::rect_of("render:job-footer").is_none());
+        assert!(crate::scenario::rect_of("render:appearance:close").is_none());
+        h.app.run("view.render_select", json!({"kind":"nothing"})).unwrap();
+        // Select a body again to test recovery of the ordinary Appearance header.
+        h.app.session.selection = vec![solidcraft_engine::Sel::Body { name: "Subject".into() }];
+        h.frames(3);
+        assert_header(&h, "Subject");
+        let inspector = crate::scenario::rect_of("render:inspector").unwrap();
+        let header = crate::scenario::rect_of("render:inspector:header").unwrap();
+        assert!(header.contains_rect(crate::scenario::rect_of("render:appearance:close").unwrap()));
+        assert!(inspector.contains_rect(crate::scenario::rect_of("dialog:editor_footer").unwrap()));
+        assert_eq!(h.app.session.doc.to_json(), before);
+        assert_eq!((h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len()), output_history);
+    }
+}
+
+#[test]
+fn wear_selection_shows_disabled_controls_with_reason_and_never_changes_method() {
+    use solidcraft_engine::render::job::aging::{AgingKind, AgingLayer};
+    fn text_color(shape: &egui::Shape, label: &str) -> Option<egui::Color32> {
+        match shape {
+            egui::Shape::Text(text) if text.galley.text().to_lowercase().contains(&label.to_lowercase()) => Some(text.fallback_color),
+            egui::Shape::Vec(shapes) => shapes.iter().find_map(|shape| text_color(shape, label)),
+            _ => None,
+        }
+    }
+    let mut h = fixture();
+    h.call("ui.resize", json!({"width":1440,"height":1800}));
+    h.app.render_workspace.view.studio.aging.push(AgingLayer::preset(AgingKind::Rust)).unwrap();
+    h.app.render_workspace.view.dirty = true;
+    let document = h.app.session.doc.to_json();
+    let stack = h.app.render_workspace.view.studio.aging.clone();
+    h.app.run("view.render_select", json!({"kind":"wear"})).unwrap();
+    let mut colours = Vec::new();
+    for method in [ImageMethod::Raster, ImageMethod::CpuRaytrace, ImageMethod::GpuRaytrace] {
+        h.app.render_workspace.view.method = method;
+        h.frames(3);
+        assert_eq!(h.app.render_workspace.view.method, method);
+        assert!(crate::scenario::rect_of("render:wear:controls").is_some());
+        assert!(crate::scenario::rect_of("render:aging-enabled").is_some());
+        assert!(crate::scenario::rect_of("render:aging-target").is_some());
+        assert!(crate::scenario::rect_of("render:page:aging").is_none(), "Wear has no master page switcher");
+        assert!(h.shapes.iter().any(|s| text_color(&s.shape, h.app.tr("render.effects_gpu_only")).is_some()));
+        colours.push(h.shapes.iter().find_map(|s| text_color(&s.shape, h.app.tr("render.wear_layers"))).unwrap());
+        if method != ImageMethod::GpuRaytrace {
+            for handle in ["render:aging-add", "render:aging-enabled", "render:aging-layer:0:enabled", "render:aging-remove"] {
+                h.step(&json!({"click":{"handle":handle}})).unwrap();
+                assert_eq!(h.app.render_workspace.view.studio.aging, stack);
+            }
+        }
+        assert_eq!(h.app.session.doc.to_json(), document);
+    }
+    for colour in &colours[..2] {
+        assert!(colour.a() < colours[2].a(), "unsupported methods fade the editor");
+    }
+    h.step(&json!({"click":{"handle":"render:aging-layer:0:enabled"}})).unwrap();
+    assert!(!h.app.render_workspace.view.studio.aging.get(0).unwrap().enabled);
+    h.app.start("render.aging.describe");
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.selection, super::super::RenderSelection::Nothing);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Appearance);
+    assert!(crate::scenario::rect_of("render:wear:controls").is_some(), "Appearance Advanced mounts the same editor");
+    assert!(h.shapes.iter().any(|s| text_color(&s.shape, h.app.tr("render.aging_airborne")).is_some()));
+}
+
+#[test]
+fn wear_editor_bounds_stale_selection_and_hostile_layer_values_never_panic() {
+    use solidcraft_engine::render::job::aging::{AgingKind, AgingLayer};
+    let mut h = fixture();
+    h.app.render_workspace.view.method = ImageMethod::GpuRaytrace;
+    h.app.run("view.render_select", json!({"kind":"wear"})).unwrap();
+    h.app.render_workspace.view.inspector.effects.selected_aging = usize::MAX;
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.inspector.effects.selected_aging, 0);
+    h.app.render_workspace.view.studio.aging.push(AgingLayer::preset(AgingKind::Dust)).unwrap();
+    h.app.render_workspace.view.dirty = true;
+    for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1e300, 1e300] {
+        let layer = h.app.render_workspace.view.studio.aging.get_mut(0).unwrap();
+        layer.strength = value;
+        layer.coverage = value;
+        layer.scale_mm = value;
+        layer.roughness = value;
+        layer.metallic = value;
+        layer.upward_bias = value;
+        layer.origin_mm = [value; 3];
+        layer.seed = u32::MAX;
+        h.app.render_workspace.view.inspector.effects.selected_aging = usize::MAX;
+        h.frames(3);
+        assert_eq!(h.app.render_workspace.view.inspector.effects.selected_aging, 0);
+    }
+    h.step(&json!({"click":{"handle":"render:aging-remove"}})).unwrap();
+    assert!(h.app.render_workspace.view.studio.aging.is_empty());
+    h.frames(3);
+    assert!(crate::scenario::rect_of("render:aging-enabled").is_none());
+}
+
+#[test]
+fn output_effects_retains_ordered_looks_and_photographic_intent_across_save_and_reload() {
     use solidcraft_engine::render::job::looks::LookKind;
     let mut h = fixture();
     super::super::select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
     let before = h.app.session.doc.to_json();
     h.app.start("render.effects.describe");
-    h.frames(3);
-    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Effects);
+    h.frames(24);
+    assert_eq!(h.app.render_workspace.view.inspector.page, Page::Output);
     for code in [3, 6] {
         h.step(&json!({"click":{"handle":"render:look-add"}})).unwrap();
         h.frames(2);
@@ -606,9 +1105,9 @@ fn backgrounds_ribbon_exposes_camera_and_physical_options_without_mutating_draft
     assert_eq!(setups::snapshot(&h.app).unwrap(), draft);
     assert_eq!(h.app.session.doc.to_json(), doc);
     assert_eq!(h.app.session.revision, revision);
-    assert!(crate::scenario::rect_of("render:background-color").is_some());
-    assert!(crate::scenario::rect_of("render:backdrop-enabled").is_some());
-    assert!(crate::scenario::rect_of("render:background-regrade").is_some());
+    assert!(crate::scenario::rect_of("dialog:section:Backdrop").is_some());
+    assert!(crate::scenario::rect_of("dialog:section:Ground and stage").is_some());
+    assert!(crate::scenario::rect_of("dialog:section:Atmosphere").is_some());
     assert!(h.app.render_workspace.view.job.is_none());
     assert!(
         super::super::ribbon::action_ready(&h.app, "render.result.regrade").is_err(),
@@ -642,6 +1141,9 @@ fn clearing_physical_stage_preserves_unsaved_camera_background_and_output_intent
     h.frames(4);
     assert_eq!(h.app.render_workspace.view.inspector.page, Page::Background);
     h.step(&json!({"click":{"handle":"render:stage-clear"}})).unwrap();
+    h.frames(3);
+    assert_eq!(h.app.render_workspace.view.draft.stage.len(), 1, "removal needs consent");
+    h.step(&json!({"click":{"handle":"dialog:ok"}})).unwrap();
     h.frames(3);
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected, "clearing stage must keep the unsaved numerical draft, not reload an older one");
     assert_eq!(h.app.session.doc.render.setups[&name], expected);

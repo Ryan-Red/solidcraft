@@ -669,6 +669,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     FileAction::Command("file.insert_mesh").run(app);
                     close = true;
                 }
+                if item_if(ui, &format!("{}…", app.tr_label("Insert Point Cloud")), "", "import", shown) {
+                    app.start("pointcloud.insert");
+                    close = true;
+                }
                 if item_if(ui, &format!("{}…", app.tr_label("Insert Design")), "", "component", shown) {
                     FileAction::Command("component.insert_design").run(app);
                     close = true;
@@ -1573,13 +1577,13 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                     icons::paint_icon(
                         &painter,
                         Rect::from_center_size(cell.center(), vec2(15.0, 15.0)),
-                        c.icon,
+                        info.icon,
                         if info.enabled { 1.0 } else { 0.35 },
                     );
                     for prefix in ["toolbar", "button", "ribbon:constraint"] {
                         crate::scenario::publish_target(&format!("{prefix}:{}", c.id), cell);
                     }
-                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, info.enabled, app.tr_label(c.label)));
+                    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, info.enabled, app.tr_label(info.label)));
                     if resp.drag_started() {
                         resp.dnd_set_drag_payload(ToolbarDrag { id: c.id, from_menu: false });
                     }
@@ -1861,7 +1865,7 @@ const CONSTRAINT_GRID_WIDTH: f32 = 82.0;
 fn ribbon_tooltip(app: &SolveApp, response: egui::Response, command: &solidcraft_engine::CommandSpec, disabled: Option<&str>) -> egui::Response {
     response.on_hover_ui(|ui| {
         let t = Tokens::get();
-        let name = app.tr_label(command.info(&app.session).label);
+        let name = app.tr_label(crate::render_workspace::interactive_command_info(app, command).label);
         let name_width =
             ui.painter().layout_no_wrap(name.to_string(), crate::fonts::semibold(crate::theme::Tokens::get().font_heading), t.text).size().x;
         let key_width = crate::keymap::display_for(app, command.id)
@@ -2273,6 +2277,10 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
         match k {
             Key::Escape => {
                 app.esc_handled = true;
+                if crate::render_workspace::result_active(app) {
+                    crate::keymap::press(app, "Escape", repeat);
+                    continue;
+                }
                 // End navigation before the underlying tool or dialog; sketch double-Escape
                 // handling starts with the next press.
                 if app.viewport.nav.take().is_some() {
@@ -3045,14 +3053,15 @@ mod header_report_tests {
             captured_frame(&mut h);
             // The report card takes a few frames to reach its full height.
             h.frames(16);
+            let close_label = if h.widget("Close draft").is_some() { "Close draft" } else { "Close" };
             // Existing review content scrolls vertically when the window is narrow.
             if width < 700.0 {
-                let [x, y] = h.widget("Close draft").unwrap();
+                let [x, y] = h.widget(close_label).unwrap();
                 h.call("ui.scroll", json!({"x":x,"y":y - 60.0,"delta":-1200}));
                 // Let the scroll animation finish before locating the click target.
                 h.frames(60);
             }
-            h.step(&json!({"widget":"Close draft"})).unwrap();
+            h.step(&json!({"widget":close_label})).unwrap();
             assert!(h.app.issue_report.draft.is_none(), "width {width}: review closes through its actual button");
             h.step(&json!({"click":{"handle":"tab:home"}})).unwrap();
             assert!(h.app.home.open, "width {width}: the Home tab remains reachable beside Report");

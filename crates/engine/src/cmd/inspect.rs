@@ -252,12 +252,7 @@ fn sketch_json(s: &Session, id: u64) -> Option<Value> {
 }
 
 fn sketch_inspect(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = match p.get("sketch") {
-        Some(Value::Number(n)) => s.doc.find_feature(&n.to_string()).map(|f| f.id),
-        Some(Value::String(x)) => s.doc.find_feature(x).map(|f| f.id),
-        _ => s.active_sketch,
-    }
-    .ok_or_else(|| bad("sketch.inspect", "no such sketch (and none is active)"))?;
+    let id = super::sketch_store::target(s, p, "sketch.inspect")?;
     sketch_json(s, id).ok_or_else(|| EngineError::Other("that sketch is not evaluated (rolled back or not a sketch)".into()))
 }
 
@@ -722,7 +717,7 @@ fn appearance_library(_s: &mut Session, _p: &Value) -> Result<Value> {
         value["category"] = json!(name.split(" - ").next().unwrap_or(name));
         Some(value)
     }));
-    for preset in &solidcraft_doc::appearance_pack::STARTER_PACK {
+    for preset in solidcraft_doc::appearance_pack::STARTER_PACK {
         let c = preset.preview_color();
         let pbr = preset.opaque_look().ok().and_then(|look| look.pbr);
         list.push(json!({"id":preset.id,"name":preset.name,"category":preset.category,"revision":preset.revision,

@@ -196,6 +196,7 @@ pub mod params_dialog;
 pub(crate) mod pick_index;
 pub(crate) mod place_gizmo;
 pub(crate) mod plugins;
+pub mod point_clouds;
 pub mod prefs;
 pub mod prefs_notice;
 mod prefs_search;
@@ -293,6 +294,7 @@ mod view_confirm;
 pub mod view_pick;
 pub mod viewport;
 mod viewport_layout;
+mod viewport_status_fixture;
 pub mod workspace;
 
 use std::sync::mpsc::Receiver;
@@ -446,6 +448,7 @@ pub struct PreSketchComponent {
 }
 
 pub struct SolveApp {
+    pub(crate) viewport_status_fixture: viewport_status_fixture::Fixture,
     /// Compact browser embed: retain model panels and joint controls without application chrome.
     pub embedded: bool,
     pub session: Session,
@@ -531,6 +534,7 @@ pub struct SolveApp {
     /// A feature started from a sketch while the marker rolls back, and that sketch: it starts
     /// once the marker is back.
     pub start_after_roll: Option<(String, u64)>,
+    pub(crate) timeline_playback: Option<timeline::Playback>,
     /// A delete's check of what it takes with it or breaks, computing off the window thread
     /// ([`deferred::DeleteCheck`], #2678).
     pub delete_check: Option<deferred::DeleteCheck>,
@@ -687,6 +691,7 @@ impl SolveApp {
         #[cfg(not(target_arch = "wasm32"))]
         solidcraft_engine::slicer_files::clean_old();
         let mut app = SolveApp {
+            viewport_status_fixture: Default::default(),
             session,
             ui: UiState::default(),
             shell: Default::default(),
@@ -734,6 +739,7 @@ impl SolveApp {
             deferred: None,
             deferred_queue: Vec::new(),
             start_after_roll: None,
+            timeline_playback: None,
             delete_check: None,
             apply_off_thread: None,
             #[cfg(test)]
@@ -1022,14 +1028,28 @@ impl SolveApp {
         if matches!(id, "file.save_mesh" | "file.send_to_slicer") {
             solidcraft_engine::slicers::set_chosen_programs(&self.preferences.custom_slicers);
         }
+        if id == "timeline.play" {
+            let reply = self.session.execute(id, &params).map_err(|e| e.to_string())?;
+            let action = serde_json::from_value(reply["action"].clone()).map_err(|e| e.to_string())?;
+            timeline::request_playback(self, action)?;
+            return Ok(reply);
+        }
         let t0 = now_ms();
+        let revision = self.session.revision;
         let selected_before = self.session.selection.clone();
-        let r = self.session.execute(id, &params).map_err(|e| e.to_string());
+        let r = self.session.execute(id, &params).map_err(|e| e.to_string()).and_then(|reply| {
+            render_workspace::apply_command(self, id, &reply)?;
+            Ok(reply)
+        });
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
         let done = self.command_completed(id, r);
+        if self.session.revision != revision {
+            timeline::stop_playback(self);
+        }
         // Render focus already applies its semantic selection after clearing object picks.
+        // A tab switch brings in the other design's own Render selection.
         if done.is_ok()
-            && id != "view.render_select"
+            && !matches!(id, "view.render_select" | "view.next_tab" | "view.previous_tab")
             && (self.session.selection != selected_before || matches!(id, "select.set" | "select.clear" | "select.same_look"))
         {
             self.render_workspace.view.selection = if self.session.selection.is_empty() {
@@ -1075,6 +1095,7 @@ impl SolveApp {
                 "view.navigation_bar" => {
                     self.ui.show_navigation_bar = v.get("visible").and_then(Value::as_bool).unwrap_or(!self.ui.show_navigation_bar)
                 }
+                "view.next_tab" | "view.previous_tab" => documents::cycle(self, id == "view.next_tab"),
                 _ => {}
             }
             if id == "view.render_inspector" {
@@ -1087,6 +1108,7 @@ impl SolveApp {
                 use render_workspace::RenderSelection;
                 let selected = match v.get("kind").and_then(Value::as_str) {
                     Some("environment") => RenderSelection::Environment,
+                    Some("wear") => RenderSelection::Wear,
                     Some("output") => RenderSelection::Output,
                     Some("light") => RenderSelection::Light(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
                     Some("shot") => RenderSelection::Shot(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
@@ -1159,7 +1181,8 @@ impl SolveApp {
                     self.preferences.timeline_left_width = ui_kit::history_snap_width(width as f32);
                 }
                 if let Some(dock) = v.get("dock").and_then(Value::as_str) {
-                    self.preferences.timeline_left = dock != "bottom";
+                    self.preferences.timeline_left = !matches!(dock, "bottom" | "browser");
+                    self.preferences.history_in_browser = dock == "browser";
                     self.preferences.timeline_under_browser = dock == "under_browser";
                     self.preferences.timeline_collapsed = false;
                     self.preferences.timeline_left_browser_collapsed = false;
@@ -1231,6 +1254,8 @@ impl SolveApp {
                     render_workspace::reset_document(self);
                     dim_view::cancel();
                     design_properties::close_object(self);
+                    timeline::stop_playback(self);
+                    self.menu.props = None;
                     sketch_attachment_ui::clear(self);
                     // The old document is already replaced: discard its editor without
                     // applying cancellation hooks (such as restoring its timeline marker).
@@ -1294,10 +1319,17 @@ impl SolveApp {
     }
 
     fn start_with_variant_memory(&mut self, id: &str, remember_variant: bool, opener: Option<egui::Rect>) {
+        if id == "timeline.play" {
+            if let Err(why) = self.run(id, json!({})) {
+                self.set_status(why, true);
+            }
+            return;
+        }
         if id == "ui.palette" {
             shortcut_box::open(self, None);
             return;
         }
+        timeline::stop_playback(self);
         // A file is loading: the design waits for it.
         if self.file_load.busy() || self.file_picker.is_some() {
             return;
@@ -1379,7 +1411,17 @@ impl SolveApp {
             return;
         }
         // A display toggle leaves the current modelling tool and camera in place.
-        if matches!(id, "view.fit" | "view.home" | "view.spin" | "view.grid" | "view.ground_shadow" | "view.navigation_bar") {
+        if matches!(
+            id,
+            "view.fit"
+                | "view.home"
+                | "view.spin"
+                | "view.grid"
+                | "view.ground_shadow"
+                | "view.navigation_bar"
+                | "view.next_tab"
+                | "view.previous_tab"
+        ) {
             let _ = self.run(id, json!({}));
             return;
         }
@@ -1493,7 +1535,7 @@ impl SolveApp {
             linked_source::start_selected(self);
             return;
         }
-        if matches!(id, "file.insert_step" | "file.insert_mesh") {
+        if matches!(id, "file.insert_step" | "file.insert_mesh" | "pointcloud.insert") {
             self.pick_open(|app, path| {
                 if let Some(path) = path {
                     app.insert_path_async(&path);
@@ -1949,7 +1991,7 @@ impl SolveApp {
 
     /// Insert CAD bodies, meshes or sketch drawing geometry into the current design.
     pub fn insert_path(&mut self, path: &str) {
-        let cmd = file_load::insert_command(path);
+        let cmd = if solidcraft_engine::io::is_point_cloud_path(path) { "pointcloud.insert" } else { file_load::insert_command(path) };
         let before: Vec<String> = self.session.world_state().bodies.iter().map(|b| b.name.clone()).collect();
         if let Ok(r) = self.run(cmd, json!({ "path": path })) {
             self.fit_view();
@@ -1960,12 +2002,14 @@ impl SolveApp {
         }
     }
 
-    /// A dropped CAD, mesh or drawing file joins a design that has features; otherwise it opens.
+    /// A dropped CAD, mesh, drawing or point cloud (PLY, XYZ, PTS) file joins a design that has
+    /// features or point clouds; otherwise it opens.
     pub fn drop_path(&mut self, path: &str) {
         let import = solidcraft_engine::io::is_step_path(path)
             || solidcraft_engine::io::is_mesh_path(path)
+            || solidcraft_engine::io::is_point_cloud_path(path)
             || solidcraft_engine::cmd::drawing_import_command(path).is_some();
-        if import && !self.session.doc.features.is_empty() {
+        if import && (!self.session.doc.features.is_empty() || !self.session.doc.point_clouds.is_empty()) {
             self.insert_path_async(path);
         } else {
             self.open_path_async(path);
@@ -2375,10 +2419,12 @@ impl SolveApp {
         }
         self.ui.layout.publish(ui.ctx());
         self.preferences.dialog_buttons.publish(ui.ctx());
+        self.preferences.toast_place.publish(ui.ctx());
         scenario::clear_handles();
         self.poll_feature_edit(ui.ctx());
         self.poll_deferred(ui.ctx());
         self.poll_delete_check(ui.ctx());
+        timeline::tick_playback(self, ui.ctx());
         if !self.embedded {
             toolbar::app_bar(self, ui);
         }
@@ -2410,7 +2456,7 @@ impl SolveApp {
         let floating = render_workspace::active(self) || ui_kit::Container::new(ui.ctx(), ui_kit::Surface::Panel).floating();
         timeline::follow_view_pick(self);
         render_ui::focus_shortcut(self, ui);
-        let show_timeline = self.ui.show_timeline && !render_workspace::active(self);
+        let show_timeline = self.ui.show_timeline && !render_workspace::active(self) && !self.preferences.history_in_browser;
         let left_timeline = show_timeline && self.preferences.timeline_left;
         timeline_left::animate_folds(self, ui.ctx());
         if !floating && !self.embedded {

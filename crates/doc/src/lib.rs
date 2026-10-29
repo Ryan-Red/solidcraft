@@ -52,6 +52,7 @@ pub mod persistent_name;
 pub mod physical_material;
 mod piece_names;
 pub mod pipe_thread_catalog;
+pub mod point_cloud;
 mod points;
 mod profile_refs;
 pub mod progress;
@@ -74,7 +75,7 @@ pub mod text_params;
 
 pub use assembly::{
     BomType, IDENTITY, MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, Mat, Occurrence, WorldNames, apply_point, apply_vector, is_identity, map_point_expr,
-    mat_inverse, mat_mul, rigid,
+    map_vector_expr, mat_inverse, mat_mul, rigid,
 };
 pub use document::*;
 pub use eval::{

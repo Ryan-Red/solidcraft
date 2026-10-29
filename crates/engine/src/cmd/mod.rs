@@ -64,6 +64,7 @@ mod mesh;
 mod metadata;
 pub(crate) mod motion;
 mod parts;
+mod point_cloud;
 mod script;
 mod section;
 pub(crate) use measure_sel::{measure_items, shape_of};
@@ -78,6 +79,10 @@ mod render_ui;
 #[cfg(test)]
 mod script_tests;
 mod sheet;
+pub(crate) use sheet::{
+    FlangeType, ThenStep, flange_edge, flange_edge_list, flange_position, flange_type, fold_points, fold_position, perforation_pattern, sheet_points,
+    then_list,
+};
 mod silhouette;
 mod sketch;
 pub(crate) use sketch::author_path_for_rebind;
@@ -94,6 +99,7 @@ mod sketch_import;
 mod sketch_inspect;
 mod sketch_modify;
 mod sketch_project;
+mod sketch_store;
 mod surface;
 mod surface_analysis;
 mod surface_boundary;
@@ -286,6 +292,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(sketch_ends::COMMANDS.iter());
     v.extend(sketch_canvas::COMMANDS.iter());
     v.extend(canvas_sketch::COMMANDS.iter());
+    v.extend(point_cloud::COMMANDS.iter());
     v.extend(sketch_3d::COMMANDS.iter());
     v.extend(surface_analysis::COMMANDS.iter());
     v.extend(surface_boundary::COMMANDS.iter());

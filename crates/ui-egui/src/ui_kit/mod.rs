@@ -32,6 +32,7 @@ mod preferences_navigation;
 mod preferences_small;
 mod radial;
 mod reports;
+mod review;
 mod search;
 mod shortcuts;
 mod sphere;
@@ -41,6 +42,7 @@ mod table;
 mod text;
 mod tree;
 mod value_focus;
+mod viewport_status;
 
 pub(crate) use actions::*;
 pub use actions::{Button, button};
@@ -77,6 +79,7 @@ pub(crate) use preferences_navigation::*;
 pub(crate) use preferences_small::*;
 pub(crate) use radial::{RADIAL_RADIUS, radial_menu};
 pub(crate) use reports::*;
+pub(crate) use review::ReviewAndApply;
 pub(crate) use search::{CommandSearch, SearchBadge, SearchFieldGeometry};
 pub(crate) use shortcuts::*;
 #[cfg(test)]
@@ -88,6 +91,7 @@ pub(crate) use status::*;
 pub(crate) use table::*;
 pub(crate) use tree::*;
 pub(crate) use value_focus::*;
+pub(crate) use viewport_status::*;
 
 #[cfg(test)]
 mod gallery;

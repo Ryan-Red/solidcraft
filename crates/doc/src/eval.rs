@@ -1865,6 +1865,14 @@ fn placement_digest(doc: &Document, f: &Feature, st: Option<&ModelState>) -> u64
                 reads.placed_body(st, tool);
             }
         }
+        // A pattern of bodies copies them along its directions or about its axis in its own
+        // component's frame, so it follows where each body it copies is placed relative to that
+        // frame: copies of a root block, patterned in a component, move with the component.
+        FeatureKind::Pattern { bodies, .. } if !bodies.is_empty() => {
+            for b in bodies {
+                reads.placed_body(st, &b.0);
+            }
+        }
         // Joins, cuts and intersects meet their targets where those are placed (#3383).
         kind if drawn_tools_change_bodies(kind) => reads.drawn_targets(st, f),
         FeatureKind::Sketch { plane, sketch } => {
@@ -6244,7 +6252,7 @@ pub fn pattern_matrices(doc: &Document, st: &ModelState, p: &crate::PatternKind)
 
 fn pattern_transforms(doc: &Document, vals: &BTreeMap<String, Value>, st: &ModelState, component: u64, p: &crate::PatternKind) -> Result<Vec<Mat>> {
     let count = |e: &str| -> Result<usize> {
-        let n = val(vals, e, Kind::Unitless)?.round();
+        let n = expr::eval_count(e, vals)?;
         if !(1.0..=MAX_INSTANCES as f64).contains(&n) {
             return Err(DocError::Invalid(format!("pattern count must be 1…{MAX_INSTANCES}")));
         }

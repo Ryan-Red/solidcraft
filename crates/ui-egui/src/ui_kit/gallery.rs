@@ -55,6 +55,17 @@ fn navigation_sample(ui: &mut Ui, size: crate::navigation_bar::Size) {
 
 // One entry per element/variant: names, rendering and geometry expectations stay together.
 const ELEMENTS: &[Element] = &[
+    element!("viewport_status_item", "viewport_status:sample:item", Some("viewport_status:sample:close"), |ui, _| {
+        let item = StatusItem {
+            id: "sample".into(),
+            kind: StatusKind::Mode,
+            name: "Draft".into(),
+            setting: "Z · 1°".into(),
+            has_key: true,
+            editable: false,
+        };
+        viewport_status_item(ui, &item, &mut StatusPresentation::default());
+    }),
     element!("sphere_thumbnail", |ui, _| {
         ui.horizontal(|ui| {
             for kind in [FinishKind::Matte, FinishKind::Satin, FinishKind::Gloss, FinishKind::Metal, FinishKind::Glass] {
@@ -118,6 +129,22 @@ const ELEMENTS: &[Element] = &[
             button(ui, "Reset to default", Button::Normal);
         });
     }),
+    element!("linear_color_field", |ui, _| {
+        row(ui, "Zenith", |ui| linear_color_field(ui, &mut [0.5, 0.64, 0.81], 1e6));
+    }),
+    element!("section_method", |ui, _| {
+        section_method(ui, "gallery_method", "Atmosphere", true, "GPU", |ui| {
+            text(ui, "Participating medium", Text::Inline);
+        });
+    }),
+    element!("segments_availability", |ui, state| {
+        segmented(
+            ui,
+            &mut state.selected,
+            &["World", "Colour", "Gradient", "Clear"],
+            Segments { enabled: &[false, true, false, true], compact: true, ..Default::default() },
+        );
+    }),
     element!("tree_row_rect", |ui, _| {
         for (index, row) in [
             Row { label: "Objects", ..Default::default() },
@@ -167,6 +194,16 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("searchable_icon_dropdown", |ui, _| {
         searchable_icon_dropdown(ui, "spin", "Replace…", &mut String::new(), &[]);
+    }),
+    element!("number_pair", |ui, _| {
+        let (mut w, mut h) = (1920, 1080);
+        number_pair(ui, "Size", [&mut w, &mut h], 1..=16384, 1.0, "");
+    }),
+    element!("progress_action", |ui, _| {
+        progress_action(ui, "Rendering · 62%", 0.62, "Cancel");
+    }),
+    element!("settings_choice_row", |ui, _| {
+        settings_choice_row(ui, &SettingsChoice { key: "gallery:radio_row", title: "Preview", summary: "1280 × 720", detail: "Preview size" }, true);
     }),
     element!("icon_label_action", |ui, _| {
         icon_label_action(ui, "Render Image", Some("play"), true, true);
@@ -255,6 +292,55 @@ const ELEMENTS: &[Element] = &[
         let mut value = 0.5;
         mixed_scalar_field(ui, &mut value, 0.0..=1.0, Some("Mixed"));
     }),
+    element!("check_line", |ui, _s| {
+        check_line(ui, "gallery:check_ok", "Ready", false);
+    }),
+    element!("check_line_warning", |ui, _s| {
+        check_line(ui, "gallery:check_warning", "Transparency approximation", true);
+    }),
+    element!("segmented_unavailable", |ui, s| {
+        segmented(
+            ui,
+            &mut s.selected,
+            &["Draft", "Custom"],
+            Segments { disabled_reasons: &[Some("waiting for the quality contract"), None], ..Default::default() },
+        );
+    }),
+    element!("review_and_apply", |ui, state| {
+        ReviewAndApply {
+            title: "Review native studio",
+            name: "Soft enveloping studio",
+            subtitle: "Native studio · whole scene",
+            replaces: "Lighting, environment, exposure and stage",
+            kept: "Camera, sampling, dimensions, optical bindings and geometry",
+            acknowledgement: "Confirm replacing saved state",
+            apply: "Apply studio",
+            copy: false,
+            notice: None,
+        }
+        .content(ui, &mut state.checked, |_| {});
+    }),
+    element!("catalog_footer_height", |ui, _| {
+        let expected = catalog_footer_height(ui);
+        catalog_footer(ui, "Click to apply to the selection.");
+        assert_eq!(crate::scenario::rect_of("catalog:footer").unwrap().height(), expected);
+    }),
+    element!("catalog_footer_with_tip", |ui, _| {
+        catalog_footer_with_tip(ui, "Click to apply to the selection.", "Paint and drag assignment are not supported yet.");
+    }),
+    element!("catalog_layout", |ui, _| {
+        ui.allocate_ui(egui::vec2(ui.available_width(), 300.0), |ui| {
+            let layout = CatalogLayout::new(ui, "gallery:catalog", 3);
+            layout.body(ui, |ui| {
+                for index in 0..12 {
+                    MenuItem::new("catalog_item", &format!("Surface {index}"), "grid").search_row(ui, "", "Authored map", None);
+                }
+            });
+            layout.footer(ui, |ui| {
+                catalog_footer(ui, "Select a surface to review.");
+            });
+        });
+    }),
     element!("sphere_grid", |ui, _| {
         let sphere = Sphere { color: Tokens::get().render_accent, kind: FinishKind::Satin, opacity: None };
         let tiles = ["gallery:grid:a", "gallery:grid:b", "gallery:grid:c"].map(|id| SphereTile {
@@ -264,6 +350,7 @@ const ELEMENTS: &[Element] = &[
             selected: id.ends_with('b'),
             users: 1,
             tip: "Satin",
+            badge: None,
         });
         sphere_grid(ui, &tiles);
     }),
@@ -275,6 +362,7 @@ const ELEMENTS: &[Element] = &[
             selected: true,
             users: 3,
             tip: "Satin metal",
+            badge: Some("Library"),
         }
         .show(ui);
     }),
@@ -514,7 +602,7 @@ const ELEMENTS: &[Element] = &[
             let side = Tokens::get().space_24;
             for control in HistoryTransport::ALL {
                 let (rect, _) = ui.allocate_exact_size(vec2(side, side), egui::Sense::hover());
-                control.show(ui, rect);
+                control.show(ui, rect, false);
             }
         });
     }),
@@ -998,6 +1086,9 @@ const ELEMENTS: &[Element] = &[
     element!("search_field", |ui, s| {
         search_field(ui, ui.id().with("search"), &mut s.value, "Search");
     }),
+    element!("menu_filter", |ui, s| {
+        menu_filter(ui, ui.id().with("menu_filter"), &mut s.value, "Filter");
+    }),
     element!("cell_editor", |ui, s| {
         cell_editor(ui, ui.id().with("cell"), &mut s.value, "Expression", true);
     }),
@@ -1340,6 +1431,15 @@ const ELEMENTS: &[Element] = &[
     }),
     element!("caption", "dialog:caption:Gallery", None, |ui, _| {
         caption(ui, "Gallery", "Construction");
+    }),
+    element!("status_line", "dialog:status:needs a joint that turns and one that slides", None, |ui, _| {
+        status_line(ui, "needs a joint that turns and one that slides", StatusTone::Dim);
+    }),
+    element!("status_line_warning", |ui, _| {
+        status_line(ui, "Pick two different components before creating a joint.", StatusTone::Warning);
+    }),
+    element!("status_line_error", |ui, _| {
+        status_line(ui, "The interference check could not finish. Check the selected bodies.", StatusTone::Error);
     }),
     element!("figure_rows", "dialog:figure:gallery", Some("dialog:Gallery"), |ui, s| {
         let Sample { value, second, .. } = s;

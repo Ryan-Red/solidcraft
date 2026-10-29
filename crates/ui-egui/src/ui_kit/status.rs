@@ -88,3 +88,30 @@ pub(crate) fn completion_text(ui: &mut egui::Ui, label: &str, complete: bool) ->
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), label));
     response
 }
+
+/// Read-only check row with shared success/warning artwork and token-sized icon.
+pub(crate) fn check_line(ui: &mut egui::Ui, key: &str, label: &str, warning: bool) -> egui::Response {
+    let t = Tokens::get();
+    let response = ui
+        .horizontal(|ui| {
+            let (rect, _) = ui.allocate_exact_size(vec2(t.form_icon_size, t.form_icon_size), egui::Sense::hover());
+            crate::icons::paint_icon(ui.painter(), rect, if warning { "status_warning" } else { "finish" }, 1.0);
+            super::text(ui, label, super::Text::Report(key, false));
+        })
+        .response;
+    crate::scenario::publish_rect(key, response.rect);
+    response
+}
+
+/// Single-row render status for a shared Navigation card. The caller dispatches Cancel.
+pub(crate) fn progress_action(ui: &mut egui::Ui, caption: &str, fraction: f32, cancel: &str) -> egui::Response {
+    let t = Tokens::get();
+    ui.horizontal(|ui| {
+        super::text(ui, caption, super::Text::Inline);
+        ui.allocate_ui_with_layout(vec2(t.space_24 * 6.0, t.control_height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            progress(ui, "render-pill", fraction);
+        });
+        super::button(ui, cancel, super::Button::Normal)
+    })
+    .inner
+}

@@ -434,6 +434,7 @@ pub(super) fn reflection_sampling_controls(app: &mut SolveApp, ui: &mut egui::Ui
     }
 }
 
+#[cfg(test)]
 pub(super) fn environment_controls(app: &mut SolveApp, ui: &mut egui::Ui) {
     let selected = app.render_workspace.view.cpu.environment;
     let key = match selected {

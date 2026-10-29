@@ -1,0 +1,10 @@
+{
+  "en": { "config.column_filter_empty": "No matching columns" },
+  "ar": { "config.column_filter_empty": "لا توجد أعمدة مطابقة" },
+  "de": { "config.column_filter_empty": "Keine passenden Spalten" },
+  "he": { "config.column_filter_empty": "אין עמודות תואמות" },
+  "ja": { "config.column_filter_empty": "一致する列がありません" },
+  "ko": { "config.column_filter_empty": "일치하는 열이 없습니다" },
+  "vi": { "config.column_filter_empty": "Không có cột phù hợp" },
+  "zh": { "config.column_filter_empty": "没有匹配的列" }
+}

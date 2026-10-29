@@ -69,6 +69,8 @@ pub enum Target {
     },
     /// The toolbar's empty space.
     Toolbar,
+    /// The History controls (first, previous, next, last, and Play when shown).
+    HistoryControls,
     /// The workspace switcher.
     Workspace,
     /// The Named Views folder, and one view (saved or standard) in it.
@@ -78,6 +80,10 @@ pub enum Target {
     },
     /// A canvas (reference image).
     Canvas {
+        id: u64,
+    },
+    /// A point cloud.
+    PointCloud {
         id: u64,
     },
     /// The Section Analysis in the browser's Analysis folder.
@@ -379,12 +385,14 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Group { id, scope } => crate::browser::group_items(app, *id, scope),
         Target::Folder { component, folder, scope } => crate::browser::folder_items(app, *component, folder, scope),
         Target::Canvas { id } => crate::browser::canvas_items(app, *id),
+        Target::PointCloud { id } => crate::browser::point_cloud_items(app, *id),
         Target::Origin => crate::browser::origin_items(app),
         Target::NamedViews => vec![act("ui.newView", "New Named View", "perspective")],
         Target::Section => crate::browser::section_items(app),
         Target::Joint { id } => joint_items(app, *id),
         Target::ToolbarCommand { id } => crate::toolbar_custom::command_items(app, id),
         Target::Toolbar => crate::toolbar_custom::toolbar_items(app),
+        Target::HistoryControls => crate::timeline::transport_items(app),
         Target::Workspace => {
             let rendering = crate::render_workspace::active(app);
             let mut v = vec![
@@ -1373,12 +1381,16 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             let body = p.get("body").and_then(Value::as_str);
             let f = id_of(&p, "feature").or_else(|| body.and_then(|b| body_feature(app, b)));
             if let Some(f) = f {
-                app.ui.show_timeline = true;
-                crate::timeline_left::reveal_feature(app, f);
-                // From a face or body, the Browser shows the feature in that body's copy. From a
-                // sketch, plane or feature row there is no body: that row is the Browser's view.
-                if let Some(body) = body {
-                    crate::browser::reveal_feature(app, f, body);
+                if app.preferences.history_in_browser {
+                    crate::browser::reveal_in_history(app, f);
+                } else {
+                    app.ui.show_timeline = true;
+                    crate::timeline_left::reveal_feature(app, f);
+                    // From a face or body, the Browser shows the feature in that body's copy. From a
+                    // sketch, plane or feature row there is no body: that row is the Browser's view.
+                    if let Some(body) = body {
+                        crate::browser::reveal_feature(app, f, body);
+                    }
                 }
                 let _ = app.run("select.set", json!({"items": [{"type": "feature", "id": f}]}));
                 app.tree.timeline_reveal = Some(f);
@@ -1477,6 +1489,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.canvasVisible" => drop(app.run("canvas.edit", p)),
         "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.shortcutPin" => {
             crate::toolbar_custom::run(app, &item.id, &p)
+        }
+        "ui.historyPlayButton" => {
+            if let Err(e) = crate::prefs::set(app, &json!({ "history_play_button": p["show"] })) {
+                app.set_status(e, true);
+            }
         }
         "ui.workspace" | "ui.workspace.design" | "ui.workspace.render" => {
             if let Some(workspace) = p.get("workspace").and_then(Value::as_str)
@@ -1600,6 +1617,11 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                 Some("orbit") => Some(crate::viewport::NavMode::Orbit),
                 _ => None,
             };
+        }
+        "ui.editPointCloud" => {
+            if let Some(c) = id_of(&p, "cloud") {
+                app.tree.cloud_panel = Some(crate::browser::CloudPanel::new(app, c));
+            }
         }
         "ui.editCanvas" | "ui.calibrateCanvas" => {
             if let Some(c) = id_of(&p, "canvas") {

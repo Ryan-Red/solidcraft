@@ -343,6 +343,38 @@ pub(crate) fn groups(app: &SolveApp) -> Vec<LookGroup> {
     groups
 }
 
+pub(crate) fn wear_subtitle(app: &SolveApp) -> String {
+    let count = app.render_workspace.view.studio.aging.len();
+    if count == 0 {
+        app.tr("render.wear_no_layers").into()
+    } else {
+        crate::i18n::format(if count == 1 { "render.wear_layer_one" } else { "render.wear_layer_count" }, &[("count", &count.to_string())])
+    }
+}
+
+fn wear(app: &mut SolveApp, ui: &mut egui::Ui) {
+    let subtitle = wear_subtitle(app);
+    let row = browser::draw_row(
+        ui,
+        ui.id().with("render_wear"),
+        &Row {
+            depth: 1,
+            label: app.tr("render.wear_title"),
+            name: true,
+            icon: "appearance",
+            subtitle: &subtitle,
+            selected: app.render_workspace.view.selection == RenderSelection::Wear,
+            ..Default::default()
+        },
+    );
+    if let Some(rect) = row.rect {
+        crate::scenario::publish_target("render:tree:wear", rect);
+    }
+    if row.clicked {
+        select(app, "wear", None);
+    }
+}
+
 /// Returns true when the object section is closed or the By look lens drew its objects.
 pub(crate) fn objects(app: &mut SolveApp, ui: &mut egui::Ui, hover_bodies: &mut Vec<String>, hovered: &mut bool) -> bool {
     if app.tree.reveal.is_some() {
@@ -351,6 +383,7 @@ pub(crate) fn objects(app: &mut SolveApp, ui: &mut egui::Ui, hover_bodies: &mut 
     if !section(app, ui, "objects") {
         return true;
     }
+    wear(app, ui);
     if !app.render_workspace.view.by_look {
         return false;
     }

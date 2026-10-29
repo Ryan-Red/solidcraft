@@ -47,14 +47,37 @@ sphere grid or list. Resources used in the design or matching a selected look's
 finish family or category appear first. Clicking a look applies through
 `appearance.assign` to selected bodies, faces or components; with no target it
 only inspects. Favorites and recent history live in user preferences. Explicit
-catalog navigation from the Inspector retains the read-only resource browser.
+catalog navigation opens the corresponding stage library.
 
-Light hosts the existing native studios and HDR environments in the same tile grid.
-A click runs `render.preset.apply` or `render.library.environment.apply`, preserving
-those commands' validation and undo behavior. Studios require an explicitly selected
-GPU path setup; environments require CPU or GPU ray tracing. Frame and Output show
-faded Frame presets / Size presets placeholders with their Shot editor / Output
-editor reasons. Stage navigation itself never applies a resource.
+Look also offers **Surfaces and references**. Surfaces/References segments and search
+lead to authored surface rows with availability badges. Selecting a surface loads
+its bounded source-map preview; Target, Plane and Repeat precede Use uniform,
+Use GPU maps and Save maps. GPU actions remain faded with a reason on other methods.
+Physical profiles retain their properties and sources; Prepare creation plan opens
+a read-only review with acknowledgement and Copy plan. It creates no material.
+
+Light hosts **Studios and environments**: a Scope dropdown, search and three-column
+tiles for Studios, Rigs, Environments and read-only Specifications. Mine remains
+visible with the reason that personal studio saving is unavailable. Clicking selects;
+Apply prepares a review without changing the method or saved settings.
+
+The shared `ui_kit::ReviewAndApply` dialog presents a resource card, Replaces/Kept,
+variant controls and explicit acknowledgement before applying. Studio, rig fit,
+environment, ground/stage, physical plan, fixed quality budget and uniform/spatial
+maps use this composition. A captured review expires when the document, revision,
+shot, method or settings change. Rig fitting offers centre, extent, captured bounds
+and emitters-only projection. Quality review reports projected dimensions, samples,
+depth and omissions; `render.quality.prepare` remains reachable through command
+activation. S5 can call `render_workspace::review_resource(app,
+"render.quality.prepare", id)` for its selected specification.
+Programmatic commands continue to execute without opening dialogs.
+
+Remove shot uses the existing shared `Confirm`; remove stage and saved optics now
+also use it. Resource removal confirmations expire after a document revision change.
+
+Confirmed reviews run `render.preset.apply`, `render.library.studio.apply` or
+`render.library.environment.apply`, preserving validation and undo. Studios require an explicitly selected
+GPU path setup; environments require CPU or GPU ray tracing. Frame shows a faded Frame presets placeholder with its Shot editor reason. Output hosts the Size presets card described below. Stage navigation itself never applies a resource.
 
 The 110 pt compass uses the free canvas beside the Inspector; the navigation bar
 keeps its shared handler. The Shots strip's independent `view.shots_strip`
@@ -109,14 +132,37 @@ final edge-aware denoising, and a thin-lens depth-of-field control. Positive ape
 requires a perspective product camera. Denoising preserves raw accumulation but can
 soften detail; glass and sharp specular first hits bypass its final spatial filter.
 
-The Environment section selects no map, an original artistic sky gradient, or a local
-Radiance `.hdr` panorama. HDR input is bounded to 16 MiB, 2048 × 1024, 2:1, and linear
+The Environment Browser row opens the Environment editor. The legacy Environment
+and Background pages use that same editor, with five sections in order: Source,
+Orientation and strength, Backdrop, Ground and stage, and Atmosphere (GPU).
+Source offers None, Artistic sky, HDR file and embedded HDR for GPU, or None,
+Constant and HDR for CPU. Change opens the Environments scope of Studios and
+environments. Embedded HDR shows its name, kind and saved-in-design status; sky
+exposes zenith, horizon and ground linear colours. CPU HDR has lighting samples.
+Radiance `.hdr` input is bounded to 16 MiB, 2048 × 1024, 2:1, and linear
 sRGB/D65 primaries; unspecified primaries require the explicit interpretation checkbox.
 EXR is not supported. Rotation and intensity affect illumination, while the saved
 background remains the camera backplate. Selecting a file runs the bounded public
 `render.hdr.inspect` command; a typed path has an explicit **Check HDR file** action.
 The picker belongs to the originating document revision, setup, method and input
 selection. A cancelled or stale answer never replaces a newer selection.
+
+Rotate and Intensity use the existing environment command; the rotation ring is
+their shortcut. Backdrop offers World, Colour, Gradient and Clear. Gradient uses
+the existing GPU camera backdrop (vertical, horizontal or radial, two colours,
+centre and radius). It never lights, casts shadows or reflects, and is refused
+with transparent output. World visibility and blur remain faded because no saved
+renderer setting backs them. Unsupported method choices stay faded with a reason.
+
+Ground and stage fits a saved ground, floor and wall, or polygonal cyclorama.
+Replacing a stage requires the explicit consent checkbox; removing it uses the
+shared **Remove the saved stage?** confirmation. The fields expose extent margin,
+clearance gap and linear reflectance, followed by the saved panel count.
+Atmosphere edits the bounded participating medium: enable, world bounds in mm,
+extinction, scattering albedo and phase. The transitional Aging page's airborne
+section calls this same function. CPU and raster show the controls faded with
+the GPU requirement. These controls use existing render state and commands;
+opening the editor never changes the design or renderer.
 
 The panel distinguishes a pending file, a checked file and **HDR saved inside this
 design**. It shows dimensions, declared colour primaries and intensity; the source
@@ -406,8 +452,9 @@ current numerical image setup, without inventing a saved rig.
 engine selection), Environment, Light, Shot and Output. It belongs to each document
 view and is never saved in a design. `view.render_select` validates semantic focus
 requests without opening dialogs or editing/evaluating a design. Object picks and
-Browser selections keep the existing selection commands. Inspector routing stays
-as before; the focus state is available to a later Inspector change.
+Browser selections keep the existing selection commands. Selecting Output opens
+the Output editor; selecting Environment opens its editor. The legacy Environment
+and Background entry points share the Environment editor.
 
 Look expands Objects, Light expands Lights and Environment, and Frame expands
 Shots. Output leaves expansion unchanged. Stages preserve selection and never
@@ -424,4 +471,27 @@ texture-map, reflection and aging controls. The separate Textures disclosure is
 marked Soon. The shared footer exports the design library through `library.export`
 and resets the current target's override through `appearance.assign`.
 `view.render_inspector {visible}` controls transient per-document visibility;
-selecting a stage reopens the editor. Selection focus routing is deferred.
+selecting a stage reopens the editor. Output selection routes to its dedicated editor;
+Environment selection routes to its editor. Other semantic selection focus routing
+remains deferred.
+
+## Output editor
+
+The Output stage offers size, format, quality and a Check summary in the stage bar's
+second row. Its lower-left Size presets card offers Preview (1280 × 720), Full HD,
+4K, Square and Custom. Presets outside the selected executor's limits stay visible
+with a disabled explanation. Custom retains the current size and reveals its fields.
+Numerical size edits and presets use `render.output.size`; they never save a shot
+or start a job.
+
+Selecting Output in the Browser shows one editor with Image, Effects and Check
+sections, without page navigation or pinned job actions. Image retains size/aspect,
+format, sampling, method, transparency and export destination controls. Effects owns
+tone, bloom, grading and regrade. Check retains the preflight list, freshness checks,
+installed backend/status metadata and expandable diagnostics. Named quality presets
+and EXR settings remain unavailable with their existing reasons. Destination selection
+uses the existing completed-image export picker.
+
+Render and Cancel stay in the stage bar. Active jobs also show a single-row progress
+pill with Cancel. The result viewer retains Copy, export, close, Fit/100% and shared
+pan/zoom. R starts the active setup; Escape closes the image without cancelling its job.

@@ -166,16 +166,7 @@ fn stage_tools(app: &mut SolveApp, ui: &mut egui::Ui) {
                 }
             }
         }
-        Stage::Output => {
-            ui.add_enabled_ui(false, |ui| {
-                let (size, format) = crate::render_workspace::output_summary(app);
-                ui_kit::button(ui, size, ui_kit::Button::Normal);
-                ui_kit::button(ui, format, ui_kit::Button::Normal);
-            })
-            .response
-            .on_disabled_hover_text(app.tr("render.output_tools_inspector"));
-            ui_kit::text(ui, app.tr("render.output_tools_inspector"), ui_kit::Text::Inline);
-        }
+        Stage::Output => crate::render_workspace::output_stage_tools(app, ui),
     }
 }
 
@@ -185,10 +176,20 @@ pub(crate) fn overlays(app: &mut SolveApp, ui: &mut egui::Ui) {
         dock_chip(app, ui, "render:focus:exit", "render.exit_focus", "view.render_focus", serde_json::json!({"on":false}));
     }
     let Some(viewport) = app.viewport.rect else { return };
-    let free = canvas(app, viewport);
+    let free = canvas(app, ui.max_rect());
     if !free.is_positive() {
         return;
     }
+    if crate::render_workspace::job_busy(app) {
+        let pill = Container::navigation_card(ui.ctx(), egui::Id::new("sc_render_progress"), free.center_top(), egui::Align2::CENTER_TOP, |ui| {
+            crate::render_workspace::progress_pill(app, ui);
+        });
+        crate::shell::register_panel(app, "render:progress-pill", Some(pill.response.rect), None);
+        crate::scenario::publish_rect("render:progress-pill", pill.response.rect);
+    } else {
+        crate::shell::register_panel(app, "render:progress-pill", None, None);
+    }
+    crate::render_workspace::environment_overlay(app, ui, viewport);
     crate::navigation_bar_view::show(app, ui, viewport);
     if !focused(app) {
         shots_pill(app, ui, free);

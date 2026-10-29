@@ -9,6 +9,38 @@ fn publish(key: &str, response: &Response) {
     scenario::publish_handle(key, response.rect.center());
 }
 
+/// Linear RGB swatch and precise channel fields. The preview is clipped to display gamut;
+/// HDR values and sub-byte precision stay intact until a control is edited.
+/// Tokens: control_height, space_4, control_fill/border and the shared colour popover.
+pub(crate) fn linear_color_field(ui: &mut Ui, rgb: &mut [f64; 3], maximum: f64) -> Response {
+    let maximum = if maximum.is_finite() { maximum.clamp(1.0, 1e6) } else { 1e6 };
+    let mut changed = false;
+    let output = ui.horizontal(|ui| {
+        let preview = rgb.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) as f32 } else { 0.0 });
+        let color = Color32::from(egui::Rgba::from_rgb(preview[0], preview[1], preview[2]));
+        let mut bytes = [color.r(), color.g(), color.b()];
+        if color_field(ui, &mut bytes).changed() {
+            let linear = egui::Rgba::from(crate::theme::srgb(bytes.map(|c| f32::from(c) / 255.0))).to_array();
+            for (channel, value) in rgb.iter_mut().zip(linear) {
+                *channel = f64::from(value);
+            }
+            changed = true;
+        }
+        let width = ((ui.available_width() - Tokens::get().space_4 * 2.0) / 3.0).max(Tokens::get().space_16);
+        for (index, value) in rgb.iter_mut().enumerate() {
+            ui.push_id(index, |ui| {
+                ui.set_width(width);
+                changed |= super::number_field(ui, value, 0.0..=maximum, 0.01, "").changed();
+            });
+        }
+    });
+    let mut response = output.response;
+    if changed {
+        response.mark_changed();
+    }
+    response
+}
+
 /// Shared colour button and outside-click-dismissed popover. Retains the enclosing row handle.
 pub(crate) fn color_field(ui: &mut Ui, rgb: &mut [u8; 3]) -> Response {
     let t = Tokens::get();
