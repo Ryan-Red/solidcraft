@@ -1213,19 +1213,6 @@ fn menu_sketch_point(app: &SolveApp, plane: &solidcraft_engine::geom::Plane) -> 
     Some(plane.to_local(plane.intersect_ray(o, d)?))
 }
 
-// ---------------------------------------------------------------------------------------------
-// Running an item
-// ---------------------------------------------------------------------------------------------
-
-fn strs(p: &Value, k: &str) -> Vec<String> {
-    p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
-}
-
-fn id_of(p: &Value, k: &str) -> Option<u64> {
-    p.get(k).and_then(Value::as_u64)
-}
-
-/// Run a menu item (what a click on it does). `at` places a rename box.
 /// Insert Design's list (#8570): each design open in another tab, inserted with one click (its
 /// file name beside it; one not saved yet greyed out, as there is no file to link), then
 /// Browse… for a file, as the button did before.
@@ -1250,6 +1237,19 @@ fn insert_design_items(app: &SolveApp) -> Vec<Item> {
     v
 }
 
+// ---------------------------------------------------------------------------------------------
+// Running an item
+// ---------------------------------------------------------------------------------------------
+
+fn strs(p: &Value, k: &str) -> Vec<String> {
+    p.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default()
+}
+
+fn id_of(p: &Value, k: &str) -> Option<u64> {
+    p.get(k).and_then(Value::as_u64)
+}
+
+/// Run a menu item (what a click on it does). `at` places a rename box.
 pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
     if !item.enabled || item.is_sep() || item.is_heading() {
         return;
