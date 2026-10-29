@@ -14,6 +14,11 @@
   panel's name for all its commands. Drag a command from the dropdown onto a panel's label
   or empty space to append it; the insertion line shows its destination. Drop onto an existing
   button to insert before it. Buttons can also move between panels, and the layout is saved.
+  Click the **+** after the tabs, right-click a tab or empty toolbar space, or use
+  **Preferences > Interface > Toolbar tabs** to hide or restore tabs. Every existing tab,
+  including Sheet Metal and Weldments, stays visible by default. Tabs you hide stay hidden in every
+  design until you show them again. Hidden tabs keep
+  their customised buttons, commands in search and shortcuts; with all tabs hidden, **+** remains.
 - **Browser** (left). The design as a tree: document settings and units, named views, the
   origin, bodies, sketches, construction planes, canvases, joints and components. The eye shows or
   hides an item, a component's radio button makes it the active component, and right-clicking any
@@ -39,6 +44,7 @@
   off: scroll zooms like the wheel); mouse wheels zoom and the thumb wheel pans sideways.
   On Linux, pinch needs the native Wayland window system
   (see [Troubleshooting](troubleshooting.md)).
+  To zoom with vertical two-finger scroll while holding a key, choose the key in Navigation › Zoom with two-finger scroll while holding (Cmd on macOS or Ctrl on Windows/Linux, Alt, or Control). It is off until you choose one.
   With the **Fusion** preset and two-finger pan enabled, hold **Shift** while scrolling with
   two fingers to orbit freely instead of panning. No click is needed. Releasing Shift returns
   to panning, even during the same gesture. Shift does not snap this gesture to standard views;
@@ -56,6 +62,11 @@
   without a limit. Both default to off for every mouse
   preset. With SolidWorks navigation, right-click a planar face and choose **Normal to Selection**
   to use Look At (also Ctrl+8); repeat to flip the side, preserving scale and projection.
+
+  **Right drag orbits** (Preferences › Navigation, on by default) is shown where the mouse
+  preset orbits on a right drag. Off, a right drag leaves the camera alone and the right button
+  only opens the context menu. Picking the SolidWorks preset turns it off and sets Middle
+  double-click to Fit; both can be changed back afterwards.
 
   **Mouse gestures** (Preferences › Navigation, off by default) work with the SolidWorks mouse preset
   only (the wheel orbits, Ctrl + wheel pans) and take over the right button, which then no longer
@@ -128,6 +139,7 @@
   selects it, and while the marker sits between a sketch and its feature, or the two are in
   different folders, the sketch keeps a row of its own. The timeline along the bottom always lists
   features in creation order.
+  Feature Folders can contain joints as well as features; closing a folder hides both behind one tile.
 - **Status bar** (off by default: Preferences › Interface › **Status bar**). A thin bar along
   the window's bottom edge, below the timeline. From the right: the design's units (click them
   to change the design's units, one undo step), the open sketch's state in its colour (under

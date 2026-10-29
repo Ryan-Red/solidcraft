@@ -44,6 +44,10 @@ pub enum Target {
     OriginPlane {
         name: String,
     },
+    /// An origin axis (X, Y or Z).
+    OriginAxis {
+        name: String,
+    },
     Component {
         id: u64,
     },
@@ -61,6 +65,8 @@ pub enum Target {
     Units,
     /// Insert › Insert Design: the designs open in other tabs, and Browse… (#8570).
     InsertDesign,
+    /// The mouse mappings (Preferences › Navigation), from the status bar (#7023).
+    Navigation,
     /// An assembly joint.
     Joint {
         id: u64,
@@ -133,7 +139,7 @@ impl Item {
             swatch: None,
         }
     }
-    fn heading(label: &str) -> Item {
+    pub(crate) fn heading(label: &str) -> Item {
         Item {
             id: format!("#{label}"),
             label: label.into(),
@@ -211,7 +217,7 @@ pub struct MenuState {
     submenu: Option<usize>,
     submenu_key: Option<usize>,
     /// When the pointer came to rest on another row while a flyout was open (it closes the
-    /// flyout after [`SUBMENU_CLOSE_DELAY`]).
+    /// flyout after [`crate::ui_kit::SUBMENU_CLOSE_DELAY`]).
     submenu_leave: Option<f64>,
     /// The radial ring is shown (viewport menus).
     pub radial: bool,
@@ -225,10 +231,14 @@ pub struct MenuState {
     pub rename: Option<Rename>,
     /// A delete waiting for its confirmation (it takes or breaks other features).
     pub confirm: Option<crate::delete::Pending>,
+    /// A selected part has no free joint value for the explicit assembly Move command.
+    pub joint_move_warning: Option<String>,
     /// Identical copies Extract to File found, waiting to be linked too.
     pub link_copies: Option<crate::linked_source::Copies>,
     /// The Properties window: title and measurements.
     pub props: Option<(String, Value)>,
+    /// Its measurement while it runs beside the window (#5203).
+    pub props_measuring: Option<crate::design_properties::Measuring>,
     /// The viewport menu opened over something: it offers Select Other.
     pub over_geometry: bool,
     /// The plane under the cursor when the viewport menu opened: it offers a sketch on it.
@@ -273,9 +283,6 @@ const DIRS: usize = 8;
 /// Half axes of the ring of radial items.
 const RX: f32 = crate::ui_kit::RADIAL_RADIUS;
 const RY: f32 = crate::ui_kit::RADIAL_RADIUS;
-/// Seconds the pointer rests on another row before an open flyout closes: a path to the flyout
-/// that crosses a neighbouring row keeps it open.
-const SUBMENU_CLOSE_DELAY: f64 = 0.3;
 
 // ---------------------------------------------------------------------------------------------
 // What the menus offer
@@ -380,6 +387,7 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Feature { id } => feature_items(app, *id),
         Target::Plane { id } => plane_items(app, *id),
         Target::OriginPlane { name } => origin_plane_items(app, name),
+        Target::OriginAxis { name } => origin_axis_items(app, name),
         Target::Component { id } => component_items(app, *id),
         Target::Occurrence { path } => occurrence_items(app, path),
         Target::Group { id, scope } => crate::browser::group_items(app, *id, scope),
@@ -414,6 +422,13 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
                 if app.session.doc.units == *u { item.key("current") } else { item }
             })
             .collect(),
+        Target::Navigation => crate::prefs::NAV_PRESETS
+            .iter()
+            .map(|preset| {
+                let item = act("ui.navPreset", preset.translated_label(), "").with(json!({ "preset": preset.id }));
+                if app.preferences.nav == preset.id { item.key("current") } else { item }
+            })
+            .collect(),
         Target::NamedView { name } => crate::browser::view_items(app, name),
         Target::InsertDesign => insert_design_items(app),
     };
@@ -441,6 +456,11 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
                     .on(crate::render_workspace::scene::same_look(app, &bodies)),
             );
         }
+    }
+    if crate::render_workspace::active(app)
+        && let Target::Body { name } = target
+    {
+        v.push(crate::render_workspace::assign::menu(app, name));
     }
     // Several items of the folder selected: they can be grouped.
     if let Some(p) = crate::browser::selection_group(app, target) {
@@ -601,6 +621,9 @@ fn viewport_items(app: &SolveApp) -> Vec<Item> {
         v.push(cmd(app, "solid.extrude", "Extrude"));
         v.push(cmd(app, "construct.plane.offset", "Offset Plane"));
         v.push(cmd(app, "solid.shell", "Shell"));
+        if crate::joint_handles::selected_occurrence(app).is_some() {
+            v.push(cmd(app, "occurrence.move", "Move"));
+        }
         v.push(act("ui.editFeature", "Edit Feature", "edit").with(json!({ "feature": feature })).on(feature.is_some()));
         v.push(act("ui.editSketch", "Edit Profile Sketch", "sketch").with(json!({ "sketch": sketch })).on(sketch.is_some()));
         let planar =
@@ -790,6 +813,12 @@ fn origin_plane_items(app: &SolveApp, name: &str) -> Vec<Item> {
     ]
 }
 
+/// An origin axis: Show/Hide, as on a plane (an axis takes no sketch) (#8382).
+fn origin_axis_items(app: &SolveApp, name: &str) -> Vec<Item> {
+    let visible = !app.session.visibility.hidden_origin.iter().any(|h| h == name);
+    vec![act("ui.originPart", "Show/Hide", "eye").key("V").with(json!({ "keys": [name], "show": !visible }))]
+}
+
 /// An assembly joint: edit, drive, suppress, delete.
 fn joint_items(app: &SolveApp, id: u64) -> Vec<Item> {
     let Some(j) = app.session.doc.assembly.joints.iter().find(|j| j.id == id) else { return Vec::new() };
@@ -823,6 +852,8 @@ fn occurrence_items(app: &SolveApp, path: &[u64]) -> Vec<Item> {
         entries.insert(0, Item::heading("Shared child: edits affect all copies of its parent"));
     }
     let bodies = app.session.occurrence_bodies(path, true).unwrap_or_default();
+    // The component's menu asks its first placement; this row may be another one.
+    let movable = !placement.grounded && app.session.held_by_rigid_group(placement.occurrence).is_none();
     for item in &mut entries {
         match item.id.as_str() {
             "ui.activate" => {
@@ -836,11 +867,13 @@ fn occurrence_items(app: &SolveApp, path: &[u64]) -> Vec<Item> {
             }
             "ui.moveOccurrence" => {
                 item.params = Some(json!({"occurrence": placement.occurrence, "path": path}));
-                item.enabled = !placement.grounded && app.session.held_by_rigid_group(placement.occurrence).is_none();
+                item.enabled = movable;
             }
             "ui.properties" => item.params = Some(json!({"occurrence": placement.occurrence, "path": path})),
             "ui.turnUpAxis" => {
+                item.enabled = movable;
                 for child in &mut item.children {
+                    child.enabled = movable;
                     if let Some(params) = child.params.as_mut() {
                         params["occurrence"] = json!(placement.occurrence);
                     }
@@ -1257,6 +1290,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
     let p = item.params.clone().unwrap_or(Value::Null);
     let bodies = strs(&p, "bodies");
     match item.id.as_str() {
+        "appearance.library" if crate::render_workspace::active(app) => {
+            app.start("appearance.library");
+        }
         "parts.resize" => {
             if let Some(component) = id_of(&p, "component") {
                 crate::dialogs_part_size::open(app, component);
@@ -1388,16 +1424,8 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
                 "inspect.measure"
             };
             let params = if command == "inspect.measure" { json!({ "bodies": bodies }) } else { p.clone() };
-            match app.session.execute(command, &params) {
-                Ok(v) => {
-                    let title = v["name"]
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) });
-                    app.menu.props = Some((title, v));
-                }
-                Err(e) => app.set_status(e.to_string(), true),
-            }
+            let fallback = if bodies.len() == 1 { bodies.join("") } else { format!("{} bodies", bodies.len()) };
+            crate::design_properties::open_object(app, command, &params, fallback);
         }
         "ui.designProperties" => app.start("document.metadata"),
         "ui.insertOpenDesign" => {
@@ -1519,6 +1547,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         }
         "ui.moveOccurrence" => {
             if let Some(o) = id_of(&p, "occurrence") {
+                if crate::joint_handles::begin(app, o) {
+                    return;
+                }
                 let mut movement = crate::browser::OccMove::new(o);
                 movement.had_pending = app.session.pending_moves.contains_key(&o);
                 movement.path = p.get("path").and_then(Value::as_array).map(|p| p.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
@@ -1535,8 +1566,14 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
             let _ = app.run("browser.visibility", json!({"visible": true, "paths": [p["path"]], "isolate": true}));
         }
         "ui.canvasVisible" => drop(app.run("canvas.edit", p)),
-        "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.shortcutPin" => {
+        "ui.toolbarPin" | "ui.toolbarRemove" | "ui.toolbarReset" | "ui.toolbarCustomize" | "ui.toolbarTab" | "ui.shortcutPin" => {
             crate::toolbar_custom::run(app, &item.id, &p)
+        }
+        "ui.navPreset" => {
+            // Picked here, a preset sets what Preferences › Navigation sets for it.
+            if let Some(preset) = crate::prefs::NAV_PRESETS.iter().find(|preset| p.get("preset").and_then(Value::as_str) == Some(preset.id)) {
+                crate::prefs::choose_nav_preset(&mut app.preferences, preset);
+            }
         }
         "ui.historyPlayButton" => {
             if let Err(e) = crate::prefs::set(app, &json!({ "history_play_button": p["show"] })) {
@@ -1942,12 +1979,17 @@ pub fn open_for(app: &mut SolveApp, at: Pos2, target: Target) {
 
 /// A button's menu: a click opens it, and a click on the same button while it is open closes it.
 pub fn toggle_for(app: &mut SolveApp, opener: Rect, at: Pos2, target: Target) {
-    if app.viewport.context_menu.is_some() && app.menu.target == target && app.menu.opener == Some(opener) {
+    if open_from(app, opener, &target) {
         close(app);
     } else {
         open_for(app, at, target);
         app.menu.opener = Some(opener);
     }
+}
+
+/// The button's menu is open, so the button can show it pressed.
+pub fn open_from(app: &SolveApp, opener: Rect, target: &Target) -> bool {
+    app.viewport.context_menu.is_some() && app.menu.target == *target && app.menu.opener == Some(opener)
 }
 
 pub fn close(app: &mut SolveApp) {
@@ -2218,7 +2260,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             // Appearance keeps its direct editor action as well as hover shortcuts.
                             if item.enabled && row.clicked() && item.id == "ui.appearance" {
                                 picked = Some(item.clone());
-                            } else if item.enabled && ((row.hovered() && ctx.input(|i| i.pointer.delta() != Vec2::ZERO)) || row.clicked()) {
+                            } else if item.enabled && (crate::ui_kit::Menu::flyout_hover(&row) || row.clicked()) {
                                 if app.menu.submenu != Some(k) {
                                     app.menu.submenu_key = None;
                                 }
@@ -2238,16 +2280,10 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     // (#6657). A pointer that is still (the flyout opened with the keys) leaves it open.
     let moved = ctx.input(|i| i.pointer.delta() != Vec2::ZERO);
     if app.menu.submenu.is_some() && other_row && (moved || app.menu.submenu_leave.is_some()) {
-        let now = ctx.input(|i| i.time);
-        let since = *app.menu.submenu_leave.get_or_insert(now);
-        let left = SUBMENU_CLOSE_DELAY - (now - since);
-        if left <= 0.0 || !left.is_finite() {
+        if crate::ui_kit::Menu::flyout_leaving(ctx, &mut app.menu.submenu_leave) {
             app.menu.submenu = None;
             app.menu.submenu_key = None;
-            app.menu.submenu_leave = None;
             submenu_row = None;
-        } else {
-            ctx.request_repaint_after(std::time::Duration::from_secs_f64(left));
         }
     } else {
         app.menu.submenu_leave = None;

@@ -277,6 +277,15 @@ fn marks(app: &SolveApp, painter: &egui::Painter, proj: &Proj) {
 /// Commands that start with a step of their own: Canvas and Decal ask for the image first,
 /// Edit Canvas opens the canvas panel. False when the command should not go on.
 pub fn start_hook(app: &mut SolveApp, id: &str) -> bool {
+    if id == "sketch.intersect"
+        && let Some(dialog) = crate::dialogs::Dialog::for_command(app, id)
+    {
+        if dialog.wants_picks() && !app.session.selection.is_empty() {
+            let _ = app.session.execute("select.clear", &json!({}));
+        }
+        app.dialog = Some(dialog);
+        return false;
+    }
     if id == "sketch.edit_text"
         && let Some(dialog) = crate::dialogs::Dialog::for_command(app, id)
     {
@@ -637,6 +646,11 @@ pub fn tool_for(id: &str) -> Option<Tool> {
     })
 }
 
+/// A successful image placement consumes the selected file and ends its tool.
+pub fn image_placement_finished(tool: &Tool) -> bool {
+    matches!(tool.cmd, "canvas.insert" | "canvas.decal") && IMAGE.with(|image| image.borrow().is_none())
+}
+
 pub fn hint(id: &str) -> Option<String> {
     Some(
         match id {
@@ -650,8 +664,8 @@ pub fn hint(id: &str) -> Option<String> {
             "inspect.center_of_mass" => "Center of mass of all bodies; click a body for its own",
             "inspect.isocurve" => "Isocurves: click faces",
             "inspect.continuity" => "Continuity: click an edge for its numbers (the button again turns the colours off)",
-            "canvas.insert" => "Canvas: click a plane or a planar face where the image's centre goes",
-            "canvas.decal" => "Decal: click a planar face where the image's centre goes",
+            "canvas.insert" => crate::i18n::tr("canvas.place_hint"),
+            "canvas.decal" => crate::i18n::tr("canvas.decal_place_hint"),
             "sketch.trim" => "Trim: click the piece of a curve to remove, or drag across the pieces to remove",
             "sketch.extend" => "Extend: click a curve near the end to extend (Shift: click two curves to extend both to where they meet)",
             "sketch.break" => "Break: click a curve where it should split",

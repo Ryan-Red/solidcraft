@@ -2492,6 +2492,26 @@ fn ends_tied_through_a_trimmed_away_end_stay_tied() {
     assert!(at("l1.end").dist(at("l2.start")) < 1e-9);
 }
 
+/// An end held on a line exactly where that line meets another curve stays tied to it when a
+/// trim takes the line away (found by the local trim fuzzer: a trimmed circle ended on a line
+/// where a fillet started, and trimming the line left the circle's end loose on the fillet's).
+#[test]
+fn an_end_held_on_a_trimmed_away_line_at_its_end_stays_tied() {
+    let mut s = new_sketch();
+    run(&mut s, "sketch.line", json!({"points": [[0, 0], [10, 0], [10, 10]], "infer": false}));
+    run(&mut s, "sketch.line", json!({"points": [[20, 5], [10, 0]], "infer": false, "connect": false}));
+    run(&mut s, "sketch.constraint.coincident", json!({"a": "l3.end", "b": "l2"}));
+    assert!(solidcraft_sketch::loose_ends(&sketch(&s)).untied.is_empty());
+    let r = run(&mut s, "sketch.trim", json!({"curve": "l2", "at": [10, 5]}));
+    assert_eq!(r["result"]["deleted"], "l2");
+    let ends = solidcraft_sketch::loose_ends(&sketch(&s));
+    assert!(ends.untied.is_empty(), "l1 and l3 still meet at (10, 0): {ends:?}");
+    run(&mut s, "sketch.drag", json!({"entity": "l1.end", "from": [10, 0], "to": [12, 1]}));
+    let sk = sketch(&s);
+    let at = |r: &str| sk.point(sk.resolve_point(r).unwrap()).unwrap();
+    assert!(at("l1.end").dist(at("l3.end")) < 1e-9);
+}
+
 #[test]
 fn trim_keeps_the_rest_of_a_dimensioned_line_where_it_was() {
     // A 40 x 40 square, its right side dimensioned with the Dimension tool (a line length).
@@ -3183,4 +3203,86 @@ fn extend_two_collinear_lines_are_refused_as_collinear() {
     let c = ids(&run(&mut s, "sketch.line", json!({"points":[[12,0],[16,0]],"connect":false,"infer":false}))["curves"])[0].clone();
     let e = s.execute("sketch.extend", &json!({"curves": [a, c]})).unwrap_err().to_string();
     assert!(e.contains("collinear"), "{e}");
+}
+
+#[test]
+fn mirror_origin_axes_keep_symmetry_and_fully_constrained_sources_driving_copies() {
+    for axis in ["x", "y"] {
+        let mut s = new_sketch();
+        run(&mut s, "parameters.add", json!({"name":"width","expression":"10 mm"}));
+        run(&mut s, "sketch.line", json!({"points":[["width","3 mm"],["width + 5 mm","8 mm"]],"ids":["source"]}));
+        let before = run(&mut s, "sketch.inspect", json!({}))["dof"].clone();
+        assert_eq!(before, 0);
+        let out = run(&mut s, "sketch.mirror", json!({"entities":["source"],"line":axis}));
+        assert_eq!(out["sketch"]["dof"], before);
+        let copy = out["curves"][0].as_str().unwrap();
+        for width in [10, 20] {
+            if width == 20 {
+                run(&mut s, "parameters.change", json!({"name":"width","expression":"20 mm"}));
+            }
+            let sk = sketch(&s);
+            let l = sk.sketch_axis_curve(axis).unwrap();
+            assert!(sk.is_linked_curve(l) && sk.curves[l].construction);
+            assert_eq!(sk.constraints.iter().filter(|c| matches!(c.kind, ConstraintKind::Symmetric { l: line, .. } if line == l)).count(), 2);
+            for (source_end, copy_end, x, y) in [("start", "end", width, 3), ("end", "start", width + 5, 8)] {
+                let source = sk.point(sk.resolve_point(&format!("source.{source_end}")).unwrap()).unwrap();
+                assert!(source.dist(Vec2::new(x as f64, y as f64)) < 1e-6);
+                let expected = if axis == "y" { Vec2::new(-source.x, source.y) } else { Vec2::new(source.x, -source.y) };
+                let actual = sk.point(sk.resolve_point(&format!("{copy}.{copy_end}")).unwrap()).unwrap();
+                assert!(actual.dist(expected) < 1e-6, "{axis}: {actual:?} != {expected:?}");
+            }
+            assert_eq!(run(&mut s, "sketch.inspect", json!({}))["dof"], before);
+        }
+    }
+}
+
+#[test]
+fn mirror_origin_axis_in_rotated_plane_reuses_projection_and_rejects_invalid_lines() {
+    let mut s = Session::default();
+    run(&mut s, "sketch.create", json!({"plane":{"origin":[0,5,0],"x_dir":[1,1,0],"y_dir":[-1,1,0]}}));
+    run(&mut s, "sketch.line", json!({"points":[[10,3],[15,8]],"ids":["source"]}));
+    let out = run(&mut s, "sketch.mirror", json!({"entities":["source"],"line":{"axis":"Y"}}));
+    let sk = sketch(&s);
+    let copy = out["curves"][0].as_str().unwrap();
+    for (source_end, copy_end) in [("start", "end"), ("end", "start")] {
+        let source = sk.point(sk.resolve_point(&format!("source.{source_end}")).unwrap()).unwrap();
+        let copy = sk.point(sk.resolve_point(&format!("{copy}.{copy_end}")).unwrap()).unwrap();
+        assert!(copy.dist(Vec2::new(source.y, source.x)) < 1e-6, "{source:?}: {copy:?}");
+    }
+    run(&mut s, "sketch.mirror", json!({"entities":["source"],"line":{"axis":"Y"}}));
+    assert_eq!(sketch(&s).links.len(), 1);
+    run(&mut s, "sketch.circle.center", json!({"center":[20,10],"radius":2,"id":"circle"}));
+    let before = s.doc.to_json();
+    for line in [json!({"axis":"Z"}), json!({"axis":"bad"}), json!({"plane":"XY"}), json!("circle"), json!("missing")] {
+        assert!(s.execute("sketch.mirror", &json!({"entities":["source"],"line":line})).is_err(), "{line}");
+        assert_eq!(s.doc.to_json(), before);
+    }
+}
+
+#[test]
+fn corner_tools_refuse_all_spatial_curves_with_an_unsupported_message() {
+    let mut s = Session::default();
+    run(&mut s, "solid.sphere", json!({"radius":20}));
+    run(&mut s, "sketch.create", json!({"plane":"XY", "offset":50}));
+    run(&mut s, "sketch.line", json!({"points":[[-10,0],[10,0]],"ids":["source"]}));
+    run(&mut s, "sketch.finish", json!({}));
+    let src = s.doc.features.last().unwrap().id;
+    run(&mut s, "sketch.create", json!({"plane":"XY"}));
+    let projected = run(&mut s, "sketch.project_to_surface", json!({"curves":[{"sketch":src,"curve":"source"}],"face":[0,0,20]}));
+    let linked = projected["links"][0]["wires"][0].as_str().unwrap().to_owned();
+    run(&mut s, "sketch.options", json!({"sketch_3d":true}));
+    let line = ids(&run(&mut s, "sketch.line3d", json!({"points":[[0,0,0],[20,0,20]]}))["curves"])[0].clone();
+    let spline = ids(&run(&mut s, "sketch.spline3d", json!({"points":[[0,0,0],[10,5,10],[20,0,20]]}))["curves"])[0].clone();
+    run(&mut s, "sketch.line", json!({"points":[[0,0],[0,20]],"ids":["side"]}));
+    let before = s.doc.to_json();
+    for cmd in ["sketch.fillet", "sketch.chamfer.equal_distance", "sketch.chamfer.two_distance", "sketch.chamfer.distance_angle"] {
+        let action = if cmd == "sketch.fillet" { "filleting" } else { "chamfering" };
+        for wire in [&line, &spline, &linked] {
+            for (a, b) in [(wire.as_str(), "side"), ("side", wire.as_str())] {
+                let error = s.execute(cmd, &json!({"a":a,"b":b,"radius":2,"distance":2,"distance2":3,"angle":45})).unwrap_err().to_string();
+                assert!(error.contains(&format!("not supported yet: {action} 3D or linked sketch curves")), "{cmd}: {error}");
+                assert_eq!(s.doc.to_json(), before);
+            }
+        }
+    }
 }

@@ -8,7 +8,7 @@ use solidcraft_doc::ProfileSel;
 use solidcraft_geom::Vec2;
 use solidcraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, intersections, intersections_within};
 
-use super::sketch::{add_c, edit, ids_of, solve_current};
+use super::sketch::{add_c, edit, ids_of, line_or_axis_ref, solve_current};
 use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, bool_, expr, num, req_expr, req_vec2, str_, string_list, vec2, vec2_list};
@@ -97,7 +97,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SKETCH", "PATTERN")
         .icon("sketch_mirror")
         .enabled(in_sketch)
-        .params(concat!("entities: [curve/point ids], line: mirror line id (symmetry constraints are added)", created_doc!())),
+        .params(concat!("entities: [curve/point ids], line: straight curve id, x / y for a sketch axis, or {axis: X|Y|Z} for an origin axis in the sketch plane (symmetry constraints are added)", created_doc!())),
     CommandSpec::new("sketch.pattern.circular", "Circular Pattern", pattern_circular)
         .at("SKETCH", "PATTERN")
         .icon("sketch_circ_pattern")
@@ -1404,6 +1404,14 @@ fn weld_corner(sk: &mut Sketch, p: &Value) {
     }
 }
 
+fn refuse_spatial_corner(sk: &Sketch, p: &Value, cmd: &str) -> Result<()> {
+    if ["a", "b"].iter().any(|key| str_(p, key).is_some_and(|id| sk.is_spatial_corner_curve(id))) {
+        let action = if cmd == "sketch.fillet" { "filleting" } else { "chamfering" };
+        return Err(bad(cmd, format!("not supported yet: {action} 3D or linked sketch curves")));
+    }
+    Ok(())
+}
+
 /// Fillets and chamfers refuse a corner on an infinite line (#1359): it has no end there.
 fn refuse_infinite_corner(sk: &Sketch, p: &Value, cmd: &str) -> Result<()> {
     let infinite = |c: Option<usize>| c.and_then(|c| sk.curves.get(c)).is_some_and(|c| c.infinite);
@@ -1661,6 +1669,7 @@ fn kept_json(kept: Vec<CornerKept>) -> (Vec<String>, Vec<String>) {
 /// Round one corner (`point` or `a`, `b`) with an arc of radius `r` tangent to both curves:
 /// the arc, the tangent constraints and what became of the corner point.
 fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize, Vec<String>, CornerKept)> {
+    refuse_spatial_corner(sk, p, cmd)?;
     refuse_infinite_corner(sk, p, cmd)?;
     refuse_offset_corner(sk, p, cmd)?;
     weld_corner(sk, p);
@@ -1772,6 +1781,7 @@ fn round_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<Option<
 
 fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Result<(f64, f64)>) -> Result<Value> {
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
+        refuse_spatial_corner(sk, p, cmd)?;
         refuse_infinite_corner(sk, p, cmd)?;
         refuse_offset_corner(sk, p, cmd)?;
         weld_corner(sk, p);
@@ -1779,6 +1789,12 @@ fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Res
         let (pc, pa, pb) = (sk.point(c).unwrap_or_default(), sk.point(fa).unwrap_or_default(), sk.point(fb).unwrap_or_default());
         let (u, v) = ((pa - pc).normalized().unwrap_or(Vec2::X), (pb - pc).normalized().unwrap_or(Vec2::Y));
         let corner_angle = u.cross(v).atan2(u.dot(v)).abs();
+        // Lines in line with each other, or lying on each other, have no corner to cut, as a
+        // fillet refuses them: on two lines lying on each other the chamfer was a line of no
+        // length between their cut-back ends.
+        if !(2e-6..=std::f64::consts::PI - 2e-9).contains(&corner_angle) {
+            return Err(bad(cmd, "the lines are parallel"));
+        }
         let (da, db) = dists(corner_angle)?;
         let (ta, tb, _, kept) = cut_corner(sk, la, lb, c, fa, fb, da, db, cmd)?;
         let l = sk.add_line_pts(ta, tb, None)?;
@@ -2630,11 +2646,24 @@ fn copy_through(
 
 fn mirror(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.mirror";
+    let origin_axis =
+        p.get("line").filter(|line| line.is_object()).map(|line| super::sketch_project::origin_axis_line(s, p, line, cmd)).transpose()?;
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
         let (cs, ps) = entities(sk, p, cmd)?;
-        let lid = str_(p, "line").ok_or_else(|| bad(cmd, "`line` must be the mirror line"))?;
-        let l = sk.curve_index(lid).ok_or_else(|| bad(cmd, format!("unknown curve `{lid}`")))?;
-        let Some(Shape::Line { a, b }) = sk.shape(l) else { return Err(bad(cmd, "the mirror must be a line")) };
+        let l = if let Some((source, geom)) = origin_axis {
+            let link =
+                sk.links.iter().find(|link| link.kind == solidcraft_sketch::LinkKind::Project && link.source == source).map(|link| link.id.clone());
+            let link = match link {
+                Some(link) => link,
+                None => sk.add_link(solidcraft_sketch::LinkKind::Project, source, &geom)?,
+            };
+            sk.link_curves(&link).first().copied().ok_or_else(|| bad(cmd, "the origin axis does not resolve to a straight line"))?
+        } else {
+            line_or_axis_ref(sk, p.get("line"), cmd, "line")?
+        };
+        let Some(Shape::Line { a, b }) = sk.shape(l) else {
+            return Err(bad(cmd, "the mirror must be a straight curve of this sketch or an origin axis in its plane"));
+        };
         let u = (b - a).normalized().ok_or_else(|| bad(cmd, "degenerate mirror line"))?;
         let refl = move |q: Vec2| {
             let foot = a + u * (q - a).dot(u);

@@ -8,6 +8,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             .bindings
             .iter()
             .filter(|binding| !(crate::mouse_gesture::active(app) && binding.button == NavButton::Right))
+            .filter(|binding| app.preferences.right_drag_orbits || !(binding.button == NavButton::Right && binding.mode == NavMode::Orbit))
             .map(|binding| {
                 let button = match binding.button {
                     NavButton::Left => "prefs.button_left",
@@ -55,8 +56,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                     let picker = ui_kit::dropdown_menu(ui, "pref_nav", nav_preset(&app.preferences.nav).translated_label(), |ui| {
                         for preset in NAV_PRESETS {
                             if ui_kit::list_picker(ui, preset.id, preset.translated_label(), app.preferences.nav == preset.id).clicked() {
-                                app.preferences.nav = preset.id.into();
-                                app.preferences.zoom_reverse = preset.reverse_zoom;
+                                choose_nav_preset(&mut app.preferences, preset);
                             }
                         }
                     });
@@ -76,6 +76,11 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             if app.preferences.free_orbit_upright {
                 ui_kit::text(ui, crate::i18n::tr("nav.free_orbit_upright.help"), ui_kit::Text::Hint("free_orbit_upright"));
             }
+        }
+        // Only shown where the mapping orbits on a right drag (#6492).
+        if nav_preset(&app.preferences.nav).bindings.iter().any(|b| b.button == NavButton::Right && b.mode == NavMode::Orbit) {
+            let right_drag = setting::right_drag_orbits(app, ui).on_hover_text(crate::i18n::tr("nav.right_drag_orbits.help"));
+            crate::scenario::publish_target("prefs:right_drag_orbits", right_drag.rect);
         }
         let help = if app.preferences.nav == TOUCHPAD_NAV {
             app.tr("nav.touchpad.help").to_owned()
@@ -133,10 +138,30 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 setting::direct_interaction(app, ui);
             });
         });
+        ui_kit::row(ui, app.tr("prefs.trackpad_zoom_modifier"), |ui| {
+            let platform = crate::tool_modifiers::Platform::of(ui.ctx());
+            let choice = &mut app.preferences.trackpad_zoom_modifier;
+            ui_kit::dropdown_menu(ui, "pref_trackpad_zoom_modifier", crate::i18n::tr(choice.label_id(platform)), |ui| {
+                for (index, value) in TrackpadZoomModifier::ALL.into_iter().enumerate() {
+                    if ui_kit::list_picker(
+                        ui,
+                        &format!("trackpad_zoom_modifier_{index}"),
+                        crate::i18n::tr(value.label_id(platform)),
+                        *choice == value,
+                    )
+                    .clicked()
+                    {
+                        *choice = value;
+                    }
+                }
+            })
+            .on_hover_text(crate::i18n::tr("prefs.trackpad_zoom_modifier.help"));
+        });
         let cursor = ui_kit::checkbox(ui, crate::i18n::tr_label("Show tool at cursor"), &mut app.ui.tool_cursor);
         crate::scenario::publish_target("view:tool_cursor", cursor.rect);
         ui_kit::divider(ui, "navigation_view_controls");
         ui_kit::settings_form(ui, 150.0, |ui| {
+            setting::wheel_zoom_speed(app, ui);
             ui_kit::row(ui, app.tr_label("View navigator"), |ui| {
                 let mut selected = usize::from(app.preferences.navigator_style == NavigatorStyle::Cube);
                 if ui_kit::segmented(

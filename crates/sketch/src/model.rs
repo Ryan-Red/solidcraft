@@ -963,13 +963,46 @@ impl Sketch {
     }
 
     pub fn add_constraint(&mut self, kind: ConstraintKind, param: Option<String>) -> Result<String> {
+        self.validate(&kind)?;
+        if let Some(same) = self.same_constraint(&kind) {
+            return Ok(same.to_string());
+        }
         if self.constraints.len() >= MAX_CONSTRAINTS {
             return Err(SketchError::TooLarge);
         }
-        self.validate(&kind)?;
         let id = self.fresh("k")?;
         self.constraints.push(Constraint { id: id.clone(), kind, param, driven: false, text: None });
         Ok(id)
+    }
+
+    /// The id of a geometric (not dimensional) constraint that already says what `kind` says: the
+    /// same kind on the same entities, in either order where the order doesn't matter.
+    pub fn same_constraint(&self, kind: &ConstraintKind) -> Option<&str> {
+        use ConstraintKind::*;
+        let pair = |x: usize, y: usize| if x <= y { (x, y) } else { (y, x) };
+        let key = |k: &ConstraintKind| -> Option<(u8, usize, usize, usize)> {
+            Some(match *k {
+                Coincident { p, q } => (0, pair(p, q).0, pair(p, q).1, 0),
+                PointOnCurve { p, c } => (1, p, c, 0),
+                Horizontal { l } => (2, l, 0, 0),
+                Vertical { l } => (3, l, 0, 0),
+                HorizontalPoints { p, q } => (4, pair(p, q).0, pair(p, q).1, 0),
+                VerticalPoints { p, q } => (5, pair(p, q).0, pair(p, q).1, 0),
+                Parallel { a, b } => (6, pair(a, b).0, pair(a, b).1, 0),
+                Perpendicular { a, b } => (7, pair(a, b).0, pair(a, b).1, 0),
+                Collinear { a, b } => (8, pair(a, b).0, pair(a, b).1, 0),
+                Tangent { a, b } => (9, pair(a, b).0, pair(a, b).1, 0),
+                Equal { a, b } => (10, pair(a, b).0, pair(a, b).1, 0),
+                Concentric { a, b } => (11, pair(a, b).0, pair(a, b).1, 0),
+                Midpoint { p, l } => (12, p, l, 0),
+                Symmetric { p, q, l } => (13, pair(p, q).0, pair(p, q).1, l),
+                Fix { p } => (14, p, 0, 0),
+                Smooth { a, b } => (15, pair(a, b).0, pair(a, b).1, 0),
+                _ => return None,
+            })
+        };
+        let want = key(kind)?;
+        self.constraints.iter().find(|c| key(&c.kind) == Some(want)).map(|c| c.id.as_str())
     }
 
     /// Check indices and entity kinds of a constraint.
@@ -1599,7 +1632,12 @@ impl Sketch {
                 owned.extend(c.kind.point_ids());
             }
         }
+        let on_ends = self.points_on_ends_of(which);
         self.drop_curves(which);
+        for (p, q) in on_ends {
+            // Only a full sketch refuses one more; the point then comes loose as before.
+            let _ = self.add_constraint(ConstraintKind::Coincident { p, q }, None);
+        }
         let mut orphans: Vec<usize> = owned.into_iter().filter(|p| *p != 0 && !self.point_used_by_curve(*p)).collect();
         orphans.sort_unstable();
         orphans.dedup();
@@ -1607,6 +1645,36 @@ impl Sketch {
         self.remove_points(&orphans);
         self.prune_links();
         self.prune_patterns();
+    }
+
+    /// Points held on one of the curves `which` exactly at one of its ends, and that end: a point
+    /// on a curve at its end meets whatever else ends there, so when the curve goes the two are
+    /// tied instead of coming apart (a trimmed circle ending on a line where a fillet starts kept
+    /// its end there only through the line). Pairs already in one coincident group are left out.
+    fn points_on_ends_of(&self, which: &[usize]) -> Vec<(usize, usize)> {
+        let mut groups: Vec<usize> = (0..self.points.len()).collect();
+        for c in &self.constraints {
+            if let ConstraintKind::Coincident { p, q } = c.kind
+                && p < groups.len()
+                && q < groups.len()
+            {
+                union(&mut groups, p, q);
+            }
+        }
+        let mut pairs = Vec::new();
+        for k in &self.constraints {
+            let ConstraintKind::PointOnCurve { p, c } = k.kind else { continue };
+            let Some((a, b)) = which.contains(&c).then(|| self.curves.get(c).and_then(|k| k.kind.ends())).flatten() else { continue };
+            let Some(at) = self.point(p) else { continue };
+            for end in [a, b] {
+                let Some(e) = self.point(end) else { continue };
+                if end != p && at.dist(e) <= crate::END_TOL && find(&mut groups, p) != find(&mut groups, end) {
+                    union(&mut groups, p, end);
+                    pairs.push((p, end));
+                }
+            }
+        }
+        pairs
     }
 
     /// Points held together only through points about to go stay together: two rectangles'

@@ -98,6 +98,7 @@ pub mod insert_handles;
 pub mod install;
 pub mod issue_report;
 pub mod joint_drag;
+pub(crate) mod joint_handles;
 pub mod keymap;
 mod length_input;
 mod linked_source;
@@ -881,6 +882,9 @@ impl SolveApp {
         self.viewport.gpu = Some(installed);
         self.viewport.tess_ready = tess_ready;
         self.viewport.draw_stats = Some(stats);
+        // The device's own limits (what it was created with), not the adapter's: uploads are split
+        // at the device's buffer size.
+        self.render_workspace.geometry_budget = render_workspace::geometry_budget(rs.device.limits().max_buffer_size, cfg!(target_arch = "wasm32"));
         render_workspace::invalidate_scene(self);
         let (samples, has_depth) = self.viewport.gpu.map_or((1, false), |g| (g.samples.max(1), g.depth.is_some()));
         self.render_workspace.host = match render_workspace::host_executor(rs.device.limits().max_texture_dimension_2d, has_depth, samples) {
@@ -1036,12 +1040,21 @@ impl SolveApp {
         }
         let t0 = now_ms();
         let revision = self.session.revision;
+        if matches!(id, "render.lights.solo" | "render.lights.mute") {
+            render_workspace::light::validate_visibility(self, &params)?;
+        }
+        let params = if matches!(id, "render.start" | "render.preflight") { render_workspace::light::filter_request(self, params)? } else { params };
         let selected_before = self.session.selection.clone();
         let r = self.session.execute(id, &params).map_err(|e| e.to_string()).and_then(|reply| {
             render_workspace::apply_command(self, id, &reply)?;
             Ok(reply)
         });
         self.big_operation |= now_ms() - t0 >= recovery_ui::BIG_OPERATION_MS;
+        // An Undo offered by the last toast is stale once another command changed the design.
+        if self.status_undo && revision != self.session.revision {
+            self.status_undo = false;
+            self.status = None;
+        }
         let done = self.command_completed(id, r);
         if self.session.revision != revision {
             timeline::stop_playback(self);
@@ -1052,11 +1065,22 @@ impl SolveApp {
             && !matches!(id, "view.render_select" | "view.next_tab" | "view.previous_tab")
             && (self.session.selection != selected_before || matches!(id, "select.set" | "select.clear" | "select.same_look"))
         {
+            if self.session.selection.is_empty() && render_workspace::active(self) {
+                render_workspace::selection_editor(self, &render_workspace::RenderSelection::Nothing);
+            }
             self.render_workspace.view.selection = if self.session.selection.is_empty() {
                 render_workspace::RenderSelection::Nothing
             } else {
                 render_workspace::RenderSelection::Object(self.session.selection.clone())
             };
+        }
+        if let Ok(v) = &done {
+            if matches!(id, "render.lights.solo" | "render.lights.mute") {
+                render_workspace::light::apply_visibility(self, id, v);
+            }
+            if matches!(id, "render.lights.set" | "render.lights.add" | "render.lights.duplicate" | "render.lights.remove") {
+                render_workspace::light::edited(self, &params, v);
+            }
         }
         done
     }
@@ -1104,16 +1128,33 @@ impl SolveApp {
             if id == "view.render_browser" {
                 render_workspace::apply_browser_controls(self, v);
             }
+            if id == "appearance.favorite" {
+                render_workspace::assign::favorite_applied(self, v);
+            }
+            if id == "view.render_frame" {
+                render_workspace::shot::apply_frame(self, v);
+            }
             if id == "view.render_select" {
                 use render_workspace::RenderSelection;
                 let selected = match v.get("kind").and_then(Value::as_str) {
                     Some("environment") => RenderSelection::Environment,
                     Some("wear") => RenderSelection::Wear,
+                    Some("lighting") => {
+                        render_workspace::select_lighting(self);
+                        RenderSelection::Lighting
+                    }
                     Some("output") => RenderSelection::Output,
-                    Some("light") => RenderSelection::Light(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
+                    Some("sampling") => RenderSelection::Sampling,
+                    Some("effects") => RenderSelection::Effects,
+                    Some("check") => RenderSelection::Check,
+                    Some("light") => {
+                        render_workspace::select_lighting(self);
+                        RenderSelection::Light(v.get("id").and_then(Value::as_str).unwrap_or_default().into())
+                    }
                     Some("shot") => RenderSelection::Shot(v.get("id").and_then(Value::as_str).unwrap_or_default().into()),
                     _ => RenderSelection::Nothing,
                 };
+                render_workspace::selection_editor(self, &selected);
                 self.render_workspace.view.selection = selected;
             }
             if id == "view.layout" {
@@ -1224,6 +1265,12 @@ impl SolveApp {
             sketch_palette::apply_mode(self, id, v);
         }
         self.finish_command(id, &r);
+        if render_workspace::active(self)
+            && matches!(id, "appearance.assign" | "appearance.paste")
+            && let Ok(value) = &r
+        {
+            render_workspace::assign::assigned(self, value);
+        }
         r
     }
 
@@ -1253,6 +1300,7 @@ impl SolveApp {
                     self.edit_in_place.active = None;
                     render_workspace::reset_document(self);
                     dim_view::cancel();
+                    design_properties::close_object(self);
                     timeline::stop_playback(self);
                     self.menu.props = None;
                     sketch_attachment_ui::clear(self);
@@ -1273,6 +1321,9 @@ impl SolveApp {
                     self.home.add_recent(&p);
                     if matches!(id, "file.save" | "file.save_as") {
                         home::remember_session(&mut self.home, &self.session);
+                        // Say where it went, as an export does (#8693).
+                        let saved = self.tr("ui.design_saved").replace("{path}", &p);
+                        self.set_status(saved, false);
                     }
                 }
             }
@@ -1351,6 +1402,9 @@ impl SolveApp {
         if self.file_load.busy() || self.file_picker.is_some() {
             return;
         }
+        if id != "occurrence.move" {
+            joint_handles::close(self);
+        }
         // Repeat Last Command starts the tool it names; it is never the one repeated itself.
         if id == "edit.repeat" {
             self.repeat_last();
@@ -1402,6 +1456,10 @@ impl SolveApp {
             return;
         }
         workspace::select_command_tab(self, id);
+        if id == "occurrence.move" {
+            joint_handles::start(self);
+            return;
+        }
         // One selected placement moves as a component, the same way as its Browser menu,
         // retaining the exact instance path and the grounding/rigid-group restrictions.
         // A selected body, or a component picked in the tree, opens Move/Copy on those bodies.
@@ -1583,6 +1641,11 @@ impl SolveApp {
             bom_panel::open(self);
             return;
         }
+        // Inspect → Measure → Properties: the window, not a reply nobody sees (#8095).
+        if matches!(id, "component.properties" | "occurrence.properties") {
+            design_properties::open_selected(self);
+            return;
+        }
         if id == "sketch.finish" {
             self.finish_sketch();
             return;
@@ -1655,6 +1718,19 @@ impl SolveApp {
         {
             self.last_command = Some((spec.id.to_string(), spec.label.to_string()));
         }
+        if id == "sketch.project"
+            && self.preferences.project_options_dialog
+            && let Some(mut d) = dialogs::Dialog::for_command(self, id)
+        {
+            if let Some(sketch) = finished_sketch {
+                d.take_sketch_profile(&self.session, sketch);
+            }
+            if d.wants_picks() && !self.session.selection.is_empty() {
+                let _ = self.session.execute("select.clear", &json!({}));
+            }
+            self.dialog = Some(d);
+            return;
+        }
         if let Some(mut t) = tools::Tool::for_command(id) {
             let state = self.session.world_state();
             let sketch = self.session.active_sketch.and_then(|s| state.sketch(s)).map(|ss| &ss.sketch);
@@ -1726,6 +1802,11 @@ impl SolveApp {
         // Undo and redo can recompute much of the history: off the window thread when slow.
         if matches!(id, "edit.undo" | "edit.redo") {
             let _ = self.run_heavy(id, json!({}));
+            return;
+        }
+        // Change Part Size with no standard part selected (its dialog had nothing to open on).
+        if id == "parts.resize" {
+            dialogs_part_size::needs_a_part(self);
             return;
         }
         let _ = self.run(id, json!({}));
@@ -2274,6 +2355,7 @@ impl SolveApp {
         prefs::apply(self, ctx);
         // The view's own dark or light only changes tokens, not egui's visuals: no restyle.
         theme::set_viewport_dark(self.preferences.viewport_theme.dark());
+        theme::set_viewport_background(self.preferences.viewport_background);
         if !self.styled || theme::is_dark() != self.ui.dark || theme::vision() != self.preferences.color_vision {
             theme::set_dark(self.ui.dark);
             theme::set_vision(self.preferences.color_vision);
@@ -2579,6 +2661,7 @@ impl SolveApp {
         delete::show(self, ui.ctx());
         easyprint_ui::show(self, ui.ctx());
         linked_source::show_copies(self, ui.ctx());
+        joint_handles::show_warning(self, ui.ctx());
         shortcut_box::show(self, ui.ctx());
         prefs::show(self, ui.ctx());
         toolbar_custom::window(self, ui.ctx());

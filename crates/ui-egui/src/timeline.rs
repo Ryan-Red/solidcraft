@@ -1,6 +1,6 @@
 //! The timeline (bottom): features in order, the rollback marker, errors and warnings.
 
-use crate::ui_kit::{Container, Edge, Surface};
+use crate::ui_kit::{Container, Edge, Status, Surface};
 use egui::{Rect, Sense, UiBuilder, pos2, vec2};
 use serde_json::{Value, json};
 use solidcraft_engine::doc::{
@@ -370,6 +370,12 @@ pub(crate) fn clipboard_buttons(app: &mut SolveApp, ui: &mut egui::Ui, id: u64) 
     }
 }
 
+/// Where each feature's result is in `results`, by feature id: the first result of an id, as
+/// `Model::result` finds it.
+fn result_index(results: &[solidcraft_engine::doc::FeatureResult]) -> std::collections::HashMap<u64, usize> {
+    results.iter().enumerate().rev().map(|(k, r)| (r.id, k)).collect()
+}
+
 /// The common prefix of a feature tooltip and its copied status message.
 pub(crate) fn status_text(name: &str, ty: &str, error: Option<&str>, warning: Option<&str>) -> String {
     let mut text = format!("{name}  ({ty})");
@@ -382,6 +388,27 @@ pub(crate) fn status_text(name: &str, ty: &str, error: Option<&str>, warning: Op
         text.push_str(&crate::i18n::format("timeline.feature_warning", &[("message", &crate::i18n::tr_diagnostic(warning))]));
     }
     text
+}
+
+/// A feature's mark: an error, else a warning; none while it is suppressed or rolled back, as
+/// it isn't built then.
+pub(crate) fn feature_status(app: &SolveApp, id: u64) -> Option<Status> {
+    let index = app.session.doc.feature_index(id)?;
+    let feature = app.session.doc.features.get(index)?;
+    if feature.suppressed || app.session.doc.marker.is_some_and(|marker| index >= marker) {
+        return None;
+    }
+    let result = app.session.model.result(id)?;
+    if result.error.is_some() { Some(Status::Error) } else { result.warning.as_ref().map(|_| Status::Warning) }
+}
+
+/// The worst mark among `ids`, with the message of the first feature that has it.
+pub(crate) fn worst_status(app: &SolveApp, ids: &[u64]) -> (Option<Status>, Option<String>) {
+    let worst = ids.iter().filter_map(|id| feature_status(app, *id).map(|status| (status, *id))).reduce(|a, b| if b.0 > a.0 { b } else { a });
+    match worst {
+        Some((status, id)) => (Some(status), feature_message(app, id)),
+        None => (None, None),
+    }
 }
 
 /// What a feature's error or warning mark says, as its tooltip shows it (name and type, then
@@ -627,6 +654,109 @@ pub(crate) fn floating_rect(available: Rect) -> Rect {
     Container::floating_card(Surface::Panel).bottom_strip_rect(available, 40.0)
 }
 
+#[derive(Clone, Debug)]
+enum FolderTile {
+    Feature(usize),
+    Folder(u64),
+    Joints(Vec<u64>),
+}
+
+/// Lay out each folder as a block, keeping feature order and placing its joints at its end.
+fn folder_tiles(app: &SolveApp, features: &[u64]) -> Vec<FolderTile> {
+    if app.session.doc.timeline_groups.is_empty() {
+        return (0..features.len()).map(FolderTile::Feature).collect();
+    }
+    fn entries(app: &SolveApp, features: &[u64], parent: Option<u64>) -> Vec<FolderTile> {
+        let groups = &app.session.doc.timeline_groups;
+        let mut entries: Vec<(usize, u64, FolderTile)> = features
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| groups.iter().find(|group| group.features.contains(id)).map(|group| group.id) == parent)
+            .map(|(index, id)| (index, *id, FolderTile::Feature(index)))
+            .collect();
+        for group in groups.iter().filter(|group| group.parent == parent) {
+            let mut pending = vec![group.id];
+            let mut seen = std::collections::BTreeSet::new();
+            let mut first = features.len();
+            while let Some(id) = pending.pop() {
+                if !seen.insert(id) {
+                    continue;
+                }
+                if let Some(group) = groups.iter().find(|group| group.id == id) {
+                    first = first.min(features.iter().position(|id| group.features.contains(id)).unwrap_or(features.len()));
+                    pending.extend(groups.iter().filter(|child| child.parent == Some(id)).map(|child| child.id));
+                }
+            }
+            entries.push((first, group.id, FolderTile::Folder(group.id)));
+        }
+        entries.sort_by_key(|(index, id, _)| (*index, *id));
+        entries.into_iter().map(|(_, _, tile)| tile).collect()
+    }
+
+    let mut out = Vec::new();
+    let mut pending = entries(app, features, None);
+    pending.reverse();
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(tile) = pending.pop() {
+        if let FolderTile::Folder(id) = tile {
+            if !visited.insert(id) {
+                continue;
+            }
+            out.push(FolderTile::Folder(id));
+            if !app.tree.collapsed.contains(&format!("timeline_group:{id}")) {
+                if let Some(group) = app.session.doc.timeline_groups.iter().find(|group| group.id == id) {
+                    pending.push(FolderTile::Joints(group.joints.clone()));
+                }
+                pending.extend(entries(app, features, Some(id)).into_iter().rev());
+            }
+        } else {
+            out.push(tile);
+        }
+    }
+    out
+}
+
+fn folder_tile(app: &mut SolveApp, ui: &mut egui::Ui, p: &egui::Painter, x: f32, r: Rect, id: u64) -> f32 {
+    let Some(group) = app.session.doc.timeline_groups.iter().find(|group| group.id == id).cloned() else { return x };
+    let t = Tokens::get();
+    let br = Rect::from_min_size(pos2(x, r.top() + 6.0), vec2(28.0, 28.0));
+    let key = format!("timeline_group:{id}");
+    let open = !app.tree.collapsed.contains(&key);
+    let resp = ui.interact(br, ui.id().with(("folder", id)), Sense::click());
+    p.rect(
+        br,
+        t.radius_sm.saturating_sub(1),
+        if resp.hovered() { t.hover } else { t.timeline_item },
+        t.control_border_stroke(t.border),
+        egui::StrokeKind::Inside,
+    );
+    crate::icons::paint_icon(p, br.shrink(4.0), "folder", f32::from(t.icon.a()) / 255.0);
+    let mut pending = vec![id];
+    let mut seen = std::collections::BTreeSet::new();
+    let mut count = 0;
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(group) = app.session.doc.timeline_groups.iter().find(|group| group.id == id) {
+            count += group.features.len() + group.joints.len();
+            pending.extend(app.session.doc.timeline_groups.iter().filter(|child| child.parent == Some(id)).map(|child| child.id));
+        }
+    }
+    p.text(br.right_bottom(), egui::Align2::RIGHT_BOTTOM, count.to_string(), egui::FontId::proportional(t.font_micro), t.text);
+    crate::scenario::publish_handle(&format!("timeline-folder:{}", group.name), br.center());
+    crate::scenario::publish_handle(&format!("timeline-folder-fold:{}", group.name), br.center());
+    if resp.clicked() {
+        if open {
+            app.tree.collapsed.insert(key);
+        } else {
+            app.tree.collapsed.remove(&key);
+        }
+    }
+    resp.on_hover_text(format!("{} ({count})", group.name));
+    x + 32.0
+}
+
 fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
     let t = Tokens::get();
     let accent = crate::theme::TabAccent::for_tab(&t, &app.ui.tab);
@@ -712,26 +842,66 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
             let drag_id = ui.id().with("tl_drag");
             let mut drag: Option<Drag> = ui.data(|d| d.get_temp(drag_id));
             let pointer = ui.input(|i| i.pointer.hover_pos());
-            let mut xs: Vec<f32> = Vec::new();
+            let mut xs: Vec<f32> = vec![x; feats.len()];
             let mut hovered: Option<u64> = None;
             let mut edit: Option<u64> = None;
             let mut marker_rect: Option<Rect> = None;
             // Each sketch's solve state, read once for the strip (#7245).
             let sketch_states = crate::sketch_state::SketchStates::of(app);
-            for (i, (id, name, icon, suppressed, ty, kind)) in feats.iter().enumerate() {
+            // Each feature's result, found once for the strip: a search per chip made a long
+            // timeline cost the square of its length every frame.
+            let results = result_index(&app.session.model.results);
+            for tile in folder_tiles(app, &order) {
+                let i = match tile {
+                    FolderTile::Folder(id) => {
+                        if marker_rect.is_none() && app.tree.collapsed.contains(&format!("timeline_group:{id}")) {
+                            let mut pending = vec![id];
+                            let mut seen = std::collections::BTreeSet::new();
+                            let mut contains_marker = false;
+                            while let Some(id) = pending.pop() {
+                                if !seen.insert(id) {
+                                    continue;
+                                }
+                                if let Some(group) = app.session.doc.timeline_groups.iter().find(|group| group.id == id) {
+                                    contains_marker |= order.get(marker).is_some_and(|feature| group.features.contains(feature));
+                                    pending.extend(
+                                        app.session.doc.timeline_groups.iter().filter(|child| child.parent == Some(id)).map(|child| child.id),
+                                    );
+                                }
+                            }
+                            if contains_marker {
+                                marker_rect = Some(Rect::from_min_size(pos2(x, r.top() + 5.0), vec2(t.space_12, r.height() - 10.0)));
+                                x += t.space_16;
+                            }
+                        }
+                        x = folder_tile(app, ui, &p, x, r, id);
+                        continue;
+                    }
+                    FolderTile::Joints(ids) => {
+                        x = crate::dialogs_assembly::timeline_joint_tiles(app, ui, &p, x, r, Some(&ids));
+                        continue;
+                    }
+                    FolderTile::Feature(index) => index,
+                };
+                let Some((id, name, icon, suppressed, ty, kind)) = feats.get(i) else { continue };
                 let sketch_state = matches!(kind, TimelineKind::Sketch).then(|| sketch_states.get(*id)).flatten();
                 if i == marker {
                     marker_rect = Some(Rect::from_min_size(pos2(x, r.top() + 5.0), vec2(t.space_12, r.height() - 10.0)));
                     x += t.space_16;
                 }
-                xs.push(x);
+                if let Some(slot) = xs.get_mut(i) {
+                    *slot = x;
+                }
                 let br = Rect::from_min_size(pos2(x, r.top() + 6.0), vec2(28.0, 28.0));
                 if reveal == Some(*id) {
                     ui.scroll_to_rect(br, Some(egui::Align::Center));
                 }
                 crate::scenario::publish_handle(&format!("timeline:{name}"), br.center());
                 let resp = ui.interact(br, ui.id().with(("feat", *id)), Sense::click_and_drag());
-                let res = app.session.model.result(*id);
+                // A feature without a result has none; an index that no longer holds this id (a
+                // command run from an earlier chip evaluated again) is searched for.
+                let res =
+                    results.get(id).and_then(|k| app.session.model.results.get(*k).filter(|r| r.id == *id).or_else(|| app.session.model.result(*id)));
                 let err = res.and_then(|r| r.error.clone());
                 let warn = res.and_then(|r| r.warning.clone());
                 let rolled = i >= marker;
@@ -834,6 +1004,11 @@ fn timeline_contents(app: &mut SolveApp, ui: &mut egui::Ui, floating: bool) {
                     delete_after_marker_button(app, ui, *id, i, marker);
                 });
                 x += 32.0;
+            }
+            let mut previous = origin;
+            for slot in &mut xs {
+                *slot = (*slot).max(previous);
+                previous = *slot;
             }
             let end = x;
             if marker >= feats.len() {
@@ -939,6 +1114,45 @@ mod tests {
     use solidcraft_engine::doc::{FeatureKind, PlaneRef};
 
     use crate::scenario::Harness;
+
+    #[test]
+    fn joint_folder_hides_fifty_joint_tiles_in_both_history_layouts() {
+        use crate::scenario::handle_at;
+        for left in [false, true] {
+            let mut h = Harness::new();
+            h.app.home.open = false;
+            h.app.preferences.timeline_left = left;
+            h.app.run("component.create", json!({"name":"Part"})).unwrap();
+            let mut joints = Vec::new();
+            for index in 0..50 {
+                joints.push(
+                    h.app.run("joint.as_built", json!({"type":"rigid", "a":0, "b":"Part", "name":format!("Hinge{index}")})).unwrap()["joint"]
+                        .as_u64()
+                        .unwrap(),
+                );
+            }
+            let folder = h.app.run("timeline.group", json!({"name":"Joints", "joints":joints})).unwrap()["group"].as_u64().unwrap();
+            h.app.tree.collapsed.insert(format!("timeline_group:{folder}"));
+            h.frames(4);
+            assert!(handle_at("timeline-folder:Joints").is_some());
+            assert_eq!(crate::scenario::handles("timeline-folder:").len(), 1);
+            assert!(crate::scenario::handles("timeline-joint:").is_empty());
+            for index in 0..50 {
+                assert!(handle_at(&format!("timeline-joint:Hinge{index}")).is_none());
+            }
+            h.step(&json!({"click":{"handle":"timeline-folder-fold:Joints"}})).unwrap();
+            h.frames(4);
+            for index in 0..50 {
+                assert!(handle_at(&format!("timeline-joint:Hinge{index}")).is_some(), "joint {index} missing, left={left}");
+            }
+            assert_eq!(crate::scenario::handles("timeline-joint:").len(), 50, "no trailing duplicates");
+            h.step(&json!({"click":{"handle":"timeline-joint:Hinge0"}})).unwrap();
+            assert_eq!(h.app.tree.picked_joints, [joints[0]]);
+            h.step(&json!({"click":{"handle":"timeline-folder-fold:Joints"}})).unwrap();
+            h.frames(4);
+            assert!(handle_at("timeline-joint:Hinge0").is_none());
+        }
+    }
 
     #[test]
     fn history_status_translates_prefixes_and_both_diagnostics() {
@@ -1568,6 +1782,31 @@ mod tests {
 
     /// A feature with a warning mark offers Copy Warning Message, which copies what its tooltip
     /// says; a feature with nothing to report doesn't offer it. In both timelines.
+    /// The strip finds each chip's result in one table: the same result `Model::result` gives,
+    /// the first one when an id has two, and none for a feature without one.
+    #[test]
+    fn each_chip_finds_its_own_result() {
+        let mut h = two_boxes(false);
+        h.app.run("solid.fillet", json!({"edges": [[5, 0, 10]], "radius": 20, "fit": "reduce", "body": "One"})).unwrap();
+        h.frames(2);
+        let model = &h.app.session.model;
+        let index = super::result_index(&model.results);
+        let ids: Vec<u64> = h.app.session.doc.features.iter().map(|f| f.id).collect();
+        assert!(ids.len() >= 3 && model.results.iter().any(|r| r.warning.is_some()), "a warned feature among others");
+        for id in &ids {
+            let found = index.get(id).and_then(|k| model.results.get(*k));
+            assert!(found.is_some_and(|r| std::ptr::eq(r, model.result(*id).unwrap())), "feature {id}");
+        }
+        assert!(!index.contains_key(&u64::MAX), "a feature without a result has none");
+        let mut twice = model.results.clone();
+        let first = twice.iter().position(|r| r.warning.is_some()).unwrap();
+        let mut copy = twice[first].clone();
+        copy.warning = None;
+        twice.push(copy);
+        let index = super::result_index(&twice);
+        assert_eq!(index.get(&twice[first].id), Some(&first), "the first result of an id wins, as in Model::result");
+    }
+
     #[test]
     fn the_feature_menu_copies_a_warning_message() {
         for left in [false, true] {

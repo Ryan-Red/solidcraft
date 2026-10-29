@@ -21,9 +21,11 @@ macro_rules! refs_doc {
 }
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new("sketch.project", "Project", project_cmd).at("SKETCH", "CREATE").icon("project").key("P").enabled(in_sketch).params(concat!(refs_doc!(), created_doc!())),
+    CommandSpec::new("sketch.project", "Project", project_cmd).at("SKETCH", "CREATE").icon("project").key("P").enabled(in_sketch).params(
+        concat!(refs_doc!(), "; projection_link?: bool (default true)", created_doc!()),
+    ),
     CommandSpec::new("sketch.intersect", "Intersect", intersect_cmd).at("SKETCH", "CREATE").icon("intersect").enabled(in_sketch).params(
-        concat!("refs: [{body}, {face: [x,y,z], body?}, {edge: [x,y,z], body?}, {sketch, curve}]: section curves (or points) with the sketch plane, linked", created_doc!()),
+        concat!("refs: [{body}, {face: [x,y,z], body?}, {edge: [x,y,z], body?}, {sketch, curve}]: section curves (or points) with the sketch plane; projection_link?: bool (default true)", created_doc!()),
     ),
     CommandSpec::new("sketch.include_3d", "Include 3D Geometry", include_cmd)
         .at("SKETCH", "CREATE")
@@ -231,6 +233,29 @@ pub(super) mod refresh_count {
     }
 }
 
+/// Resolve an origin axis as a mirror line, keeping its projection linked and fixed.
+pub(super) fn origin_axis_line(s: &Session, p: &Value, line: &Value, cmd: &str) -> Result<(LinkSource, Vec<solidcraft_sketch::LinkGeom>)> {
+    let id = sketch_store::target(s, p, cmd)?;
+    let doc = placed_candidate(s, &s.doc);
+    let st = s.model.state_before(id);
+    let st = state_for_sketch(s, &doc, id, &st)?;
+    let plane = sketch_plane(&doc, id, &st)?;
+    let src = source(s, line, cmd)?;
+    let LinkSource::Axis { name } = &src else { return Err(bad(cmd, "the mirror line must be a straight sketch curve or an origin axis")) };
+    let dir = match name.as_str() {
+        "X" => Vec3::X,
+        "Y" => Vec3::Y,
+        "Z" => Vec3::Z,
+        _ => return Err(bad(cmd, "the origin axis must be X, Y or Z")),
+    };
+    if plane.normal().dot(dir).abs() > 1e-9 || plane.normal().dot(plane.origin).abs() > 1e-6 {
+        return Err(bad(cmd, "the origin axis must lie in the sketch plane"));
+    }
+    let (vals, _) = doc.param_values();
+    let r = resolve(&doc, &vals, &st, &plane, LinkKind::Project, &src)?;
+    Ok((r.source, r.geom))
+}
+
 /// Add a link for `src` to sketch `id` in `doc` (not stored in the session). Returns the link id.
 pub(super) fn add_link(s: &Session, doc: &Document, id: u64, sk: &mut Sketch, kind: LinkKind, src: LinkSource) -> Result<String> {
     add_link_unless_present(s, doc, id, sk, kind, src, false).map(|l| l.unwrap_or_default())
@@ -284,7 +309,7 @@ fn link_json(sk: &Sketch, link: &str) -> Value {
     json!({"link": link, "curves": curves, "points": points})
 }
 
-fn run_links(s: &mut Session, p: &Value, cmd: &str, kind: LinkKind) -> Result<Value> {
+fn run_links(s: &mut Session, p: &Value, cmd: &str, kind: LinkKind, projection_link: bool) -> Result<Value> {
     let refs: Vec<Value> = match p.get("refs").or_else(|| p.get("ref")) {
         Some(Value::Array(a)) => a.iter().take(1000).cloned().collect(),
         Some(v) => vec![v.clone()],
@@ -304,7 +329,14 @@ fn run_links(s: &mut Session, p: &Value, cmd: &str, kind: LinkKind) -> Result<Va
         for src in sources {
             let what = src.describe();
             match add_link_unless_present(s, doc, id, sk, kind, src, kind == LinkKind::Project) {
-                Ok(Some(l)) => out.push(link_json(sk, &l)),
+                Ok(Some(l)) => {
+                    let mut result = link_json(sk, &l);
+                    if !projection_link {
+                        result["link"] = Value::Null;
+                        sk.break_link(&l)?;
+                    }
+                    out.push(result);
+                }
                 Ok(None) => present.push(what),
                 Err(e) => return Err(bad(cmd, format!("{what}: {e}"))),
             }
@@ -323,15 +355,25 @@ fn run_links(s: &mut Session, p: &Value, cmd: &str, kind: LinkKind) -> Result<Va
 }
 
 fn project_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    run_links(s, p, "sketch.project", LinkKind::Project)
+    let projection_link = match p.get("projection_link") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(bad("sketch.project", "`projection_link` must be a boolean")),
+    };
+    run_links(s, p, "sketch.project", LinkKind::Project, projection_link)
 }
 
 fn intersect_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    run_links(s, p, "sketch.intersect", LinkKind::Intersect)
+    let projection_link = match p.get("projection_link") {
+        None => true,
+        Some(Value::Bool(value)) => *value,
+        Some(_) => return Err(bad("sketch.intersect", "`projection_link` must be a boolean")),
+    };
+    run_links(s, p, "sketch.intersect", LinkKind::Intersect, projection_link)
 }
 
 fn include_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    run_links(s, p, "sketch.include_3d", LinkKind::Include)
+    run_links(s, p, "sketch.include_3d", LinkKind::Include, true)
 }
 
 /// A constraint's operands may be model geometry (#6348): an `{edge: [x,y,z], body?}` or
